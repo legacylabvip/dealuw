@@ -114,7 +114,41 @@ export default function AnalyzePage() {
   const [showDqComps, setShowDqComps] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState<AIAnalysisResult | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+
+  // ─── Export PDF ─────────────────────────────────────────────────
+
+  const exportPDF = async () => {
+    if (!report) return;
+    setExporting(true);
+    try {
+      const res = await fetch('/api/export-pdf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subject: report.subject,
+          arvResult: report.arvResult,
+          repairEstimate: report.repairEstimate,
+          allOffers: report.allOffers,
+          adjusted: report.adjusted,
+          generatedAt: report.generatedAt,
+          confidence: report.confidence,
+        }),
+      });
+      if (!res.ok) throw new Error('PDF generation failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `DealUW_${report.subject.address.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 40)}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch { /* ignore */ }
+    setExporting(false);
+  };
 
   // ─── Photo upload ─────────────────────────────────────────────
 
@@ -746,8 +780,8 @@ export default function AnalyzePage() {
               <button onClick={saveToPipeline} disabled={saving} className="rounded-xl bg-accent px-8 py-3 text-sm font-semibold text-white hover:bg-accent/80 transition-colors disabled:opacity-50">
                 {saving ? 'Saving...' : 'Save to Pipeline'}
               </button>
-              <button disabled className="rounded-xl border border-border px-6 py-3 text-sm text-muted cursor-not-allowed opacity-50">
-                Export PDF
+              <button onClick={exportPDF} disabled={exporting} className="rounded-xl border border-accent/50 px-6 py-3 text-sm font-medium text-accent hover:bg-accent/10 transition-colors disabled:opacity-50">
+                {exporting ? 'Generating...' : 'Export PDF'}
               </button>
               <button disabled className="rounded-xl border border-border px-6 py-3 text-sm text-muted cursor-not-allowed opacity-50">
                 Share Report
