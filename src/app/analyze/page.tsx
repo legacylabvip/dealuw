@@ -1,12 +1,13 @@
 'use client';
 
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Navbar from '@/components/Navbar';
-import { COMP_RULES, ADJUSTMENTS } from '@/lib/compRules';
-import { filterComps, adjustComps, calculateARV, calculateMAO, type AdjustedComp } from '@/lib/compEngine';
-import type { AIAnalysisResult } from '@/lib/aiAnalysis';
+import { COMP_RULES } from '@/lib/compRules';
+import { filterComps, adjustComps, calculateARV, type AdjustedComp, type ARVResult, type Adjustment } from '@/lib/compEngine';
 import type { RepairEstimate, RepairLineItem } from '@/lib/repairEstimator';
+import type { AllOffers, CashOffer, OwnerFinanceOffer, NovationOffer, NegotiationGuide } from '@/lib/offerCalculator';
+import type { AIAnalysisResult } from '@/lib/aiAnalysis';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -32,50 +33,16 @@ interface Subject {
   guest_house_sqft: number;
   traffic_commercial: string;
   asking_price: number | null;
-}
-
-interface Comp {
-  id?: number;
-  address: string;
-  sale_price: number;
-  sale_date: string;
-  days_old?: number;
-  sqft: number;
-  lot_sqft: number;
-  beds: number;
-  baths: number;
-  year_built: number;
-  property_type: string;
-  distance_miles: number;
-  same_subdivision: boolean;
-  crosses_major_road: boolean;
-  has_pool: boolean;
-  has_garage: boolean;
-  garage_count: number;
-  has_carport: boolean;
-  has_basement: boolean;
-  basement_sqft: number;
-  has_guest_house: boolean;
-  guest_house_sqft: number;
-  force_include?: boolean;
-  // After filtering/adjusting
-  disqualified?: boolean;
-  disqualified_reasons?: string[];
-  warnings?: string[];
-  adjusted_price?: number;
-  adjustments?: { type: string; amount: number; reason: string }[];
-  total_adjustment?: number;
-  price_per_sqft?: number;
-  selected?: boolean;
-}
-
-interface RepairItem {
-  label: string;
-  key: string;
-  max: number;
-  value: number;
-  enabled: boolean;
-  multiplier?: number;
+  // Extended seller info
+  seller_motivation: string;
+  seller_timeline: string;
+  monthly_rent: number | null;
+  seller_notes: string;
+  // From property lookup
+  tax_assessed_value: number | null;
+  last_sale_price: number | null;
+  last_sale_date: string | null;
+  subdivision: string | null;
 }
 
 interface UploadedPhoto {
@@ -84,9 +51,32 @@ interface UploadedPhoto {
   label: string;
 }
 
-type RepairModeType = 'ai' | 'quick' | 'detailed';
+interface AnalysisStep {
+  label: string;
+  status: 'pending' | 'running' | 'done' | 'error';
+  detail?: string;
+}
 
-type Step = 'address' | 'details' | 'comps' | 'repairs' | 'verdict';
+interface FullReport {
+  subject: Subject;
+  photos: UploadedPhoto[];
+  // Comp engine
+  rawComps: Record<string, unknown>[];
+  qualified: Record<string, unknown>[];
+  disqualified: Record<string, unknown>[];
+  adjusted: AdjustedComp[];
+  arvResult: ARVResult | null;
+  // Repairs
+  repairEstimate: RepairEstimate | null;
+  // Offers
+  allOffers: AllOffers | null;
+  negotiationGuide: NegotiationGuide | null;
+  // Meta
+  generatedAt: string;
+  confidence: string;
+}
+
+type PageStep = 'input' | 'loading' | 'report';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -96,13 +86,8 @@ const money = (n: number | null | undefined) =>
 const mono = { fontFamily: "'JetBrains Mono', monospace" } as const;
 
 const PROPERTY_TYPES = ['ranch', '2-story', 'split-level', 'historic', 'condo', 'townhouse', 'multi-family'];
-const CONDITIONS = ['excellent', 'good', 'fair', 'poor'];
-const TRAFFIC_OPTIONS = [
-  { value: 'none', label: 'None' },
-  { value: 'siding', label: 'Siding (backs to commercial/busy road)' },
-  { value: 'backing', label: 'Backing (backs to undesirable)' },
-  { value: 'fronting', label: 'Fronting (fronts major road/commercial)' },
-];
+const MOTIVATIONS = ['', 'Pre-foreclosure', 'Probate', 'Tired Landlord', 'Divorce', 'Relocation', 'Downsizing', 'Tax Liens', 'Other'];
+const TIMELINES = ['', 'ASAP', '30 days', '60 days', 'Flexible'];
 
 const defaultSubject: Subject = {
   address: '', city: '', state: '', zip: '',
@@ -111,1187 +96,671 @@ const defaultSubject: Subject = {
   has_pool: false, has_garage: false, garage_count: 0, has_carport: false,
   has_basement: false, basement_sqft: 0, has_guest_house: false, guest_house_sqft: 0,
   traffic_commercial: 'none', asking_price: null,
+  seller_motivation: '', seller_timeline: '', monthly_rent: null, seller_notes: '',
+  tax_assessed_value: null, last_sale_price: null, last_sale_date: null, subdivision: null,
 };
-
-const defaultRepairItems: RepairItem[] = [
-  { label: 'Roof', key: 'roof', max: 20000, value: 0, enabled: false },
-  { label: 'Kitchen', key: 'kitchen', max: 25000, value: 0, enabled: false },
-  { label: 'Bathrooms', key: 'bathrooms', max: 15000, value: 0, enabled: false, multiplier: 1 },
-  { label: 'Flooring', key: 'flooring', max: 15000, value: 0, enabled: false },
-  { label: 'Interior Paint', key: 'int_paint', max: 8000, value: 0, enabled: false },
-  { label: 'Exterior Paint', key: 'ext_paint', max: 8000, value: 0, enabled: false },
-  { label: 'HVAC', key: 'hvac', max: 12000, value: 0, enabled: false },
-  { label: 'Plumbing', key: 'plumbing', max: 10000, value: 0, enabled: false },
-  { label: 'Electrical', key: 'electrical', max: 10000, value: 0, enabled: false },
-  { label: 'Foundation', key: 'foundation', max: 20000, value: 0, enabled: false },
-  { label: 'Windows', key: 'windows', max: 12000, value: 0, enabled: false },
-  { label: 'Landscaping', key: 'landscaping', max: 5000, value: 0, enabled: false },
-];
 
 // ─── Main Component ─────────────────────────────────────────────────────────
 
 export default function AnalyzePage() {
   const router = useRouter();
-  const [step, setStep] = useState<Step>('address');
+  const [step, setStep] = useState<PageStep>('input');
   const [subject, setSubject] = useState<Subject>(defaultSubject);
-  const [rawComps, setRawComps] = useState<Comp[]>([]);
-  const [overriddenComps, setOverriddenComps] = useState<Set<number>>(new Set());
-  const [deselectedComps, setDeselectedComps] = useState<Set<number>>(new Set());
-  const [repairMode, setRepairMode] = useState<RepairModeType>('quick');
-  const [quickRepairRate, setQuickRepairRate] = useState<number>(20);
-  const [repairItems, setRepairItems] = useState<RepairItem[]>(defaultRepairItems);
-  const [otherRepairLabel, setOtherRepairLabel] = useState('');
-  const [otherRepairAmount, setOtherRepairAmount] = useState(0);
-  const [arvOverride, setArvOverride] = useState<number | null>(null);
-  const [showArvOverride, setShowArvOverride] = useState(false);
-  const [showAddComp, setShowAddComp] = useState(false);
+  const [photos, setPhotos] = useState<UploadedPhoto[]>([]);
+  const [report, setReport] = useState<FullReport | null>(null);
+  const [analysisSteps, setAnalysisSteps] = useState<AnalysisStep[]>([]);
   const [saving, setSaving] = useState(false);
-  const [recentAddresses, setRecentAddresses] = useState<string[]>([]);
-  const [showCompAdjBreakdown, setShowCompAdjBreakdown] = useState(false);
+  const [showNegGuide, setShowNegGuide] = useState(false);
+  const [showDqComps, setShowDqComps] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState<AIAnalysisResult | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
-  const [aiError, setAiError] = useState<string | null>(null);
-  const [aiExpanded, setAiExpanded] = useState(true);
-  const [aiCacheKey, setAiCacheKey] = useState<string | null>(null);
-  const [autoPullLoading, setAutoPullLoading] = useState(false);
-  const [autoPullError, setAutoPullError] = useState<string | null>(null);
-  const [autoPullAvailable, setAutoPullAvailable] = useState<boolean | null>(null);
-  const [compPullExpansions, setCompPullExpansions] = useState<string[]>([]);
-  const [uploadedPhotos, setUploadedPhotos] = useState<UploadedPhoto[]>([]);
-  const [aiRepairEstimate, setAiRepairEstimate] = useState<RepairEstimate | null>(null);
-  const [aiRepairLoading, setAiRepairLoading] = useState(false);
-  const [aiRepairError, setAiRepairError] = useState<string | null>(null);
-  const [aiRepairOverrides, setAiRepairOverrides] = useState<Record<string, number>>({});
+  const abortRef = useRef<AbortController | null>(null);
 
-  // Check if auto-pull is available
-  useEffect(() => {
-    fetch('/api/property-lookup')
-      .then(r => r.json())
-      .then(d => setAutoPullAvailable(d.available))
-      .catch(() => setAutoPullAvailable(false));
-  }, []);
-
-  // Load recent addresses
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem('dealuw_recent_addresses');
-      if (saved) setRecentAddresses(JSON.parse(saved));
-    } catch { /* ignore */ }
-  }, []);
-
-  const saveRecentAddress = useCallback((addr: string) => {
-    if (!addr) return;
-    const updated = [addr, ...recentAddresses.filter(a => a !== addr)].slice(0, 5);
-    setRecentAddresses(updated);
-    try { localStorage.setItem('dealuw_recent_addresses', JSON.stringify(updated)); } catch { /* ignore */ }
-  }, [recentAddresses]);
-
-  // ─── Auto-pull property data & comps ────────────────────────────
-
-  const handlePullData = async () => {
-    if (!subject.address) return;
-    saveRecentAddress(subject.address);
-
-    if (!autoPullAvailable) {
-      setStep('details');
-      return;
-    }
-
-    setAutoPullLoading(true);
-    setAutoPullError(null);
-    setCompPullExpansions([]);
-
-    try {
-      // Step 1: Lookup property
-      const lookupRes = await fetch('/api/property-lookup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ address: subject.address, city: subject.city, state: subject.state, zip: subject.zip }),
-      });
-      const lookupData = await lookupRes.json();
-
-      if (lookupData.available && lookupData.property) {
-        const p = lookupData.property;
-        setSubject(s => ({
-          ...s,
-          address: p.address || s.address,
-          city: p.city || s.city,
-          state: p.state || s.state,
-          zip: p.zip || s.zip,
-          beds: p.beds ?? s.beds,
-          baths: p.baths ?? s.baths,
-          sqft: p.sqft ?? s.sqft,
-          lot_sqft: p.lot_sqft ?? s.lot_sqft,
-          year_built: p.year_built ?? s.year_built,
-          property_type: p.property_type || s.property_type,
-          has_pool: p.has_pool ?? s.has_pool,
-          has_garage: p.has_garage ?? s.has_garage,
-          garage_count: p.garage_count ?? s.garage_count,
-          has_carport: p.has_carport ?? s.has_carport,
-          has_basement: p.has_basement ?? s.has_basement,
-          basement_sqft: p.basement_sqft ?? s.basement_sqft,
-          has_guest_house: p.has_guest_house ?? s.has_guest_house,
-          guest_house_sqft: p.guest_house_sqft ?? s.guest_house_sqft,
-        }));
-
-        // Step 2: Pull comps with the property data
-        const compsRes = await fetch('/api/pull-comps', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ property: p }),
-        });
-        const compsData = await compsRes.json();
-
-        if (compsData.available && compsData.comps?.length > 0) {
-          setRawComps(compsData.comps);
-          if (compsData.expansions?.length > 0) {
-            setCompPullExpansions(compsData.expansions);
-          }
-        }
-      } else {
-        setAutoPullError(lookupData.error || 'Property not found. Enter details manually.');
-      }
-    } catch {
-      setAutoPullError('Auto-pull failed. Enter details manually.');
-    } finally {
-      setAutoPullLoading(false);
-      setStep('details');
-    }
-  };
-
-  // ─── Photo upload & AI repair estimate ─────────────────────────
+  // ─── Photo upload ─────────────────────────────────────────────
 
   const handlePhotoUpload = useCallback((files: FileList | File[]) => {
-    const maxPhotos = 10;
-    const remaining = maxPhotos - uploadedPhotos.length;
-    const toProcess = Array.from(files).slice(0, remaining);
-
-    toProcess.forEach(file => {
+    const max = 10;
+    const remaining = max - photos.length;
+    Array.from(files).slice(0, remaining).forEach(file => {
       const reader = new FileReader();
       reader.onload = (e) => {
         const dataUrl = e.target?.result as string;
-        if (dataUrl) {
-          setUploadedPhotos(prev => {
-            if (prev.length >= maxPhotos) return prev;
-            return [...prev, { dataUrl, name: file.name, label: '' }];
-          });
-        }
+        if (dataUrl) setPhotos(prev => prev.length < max ? [...prev, { dataUrl, name: file.name, label: '' }] : prev);
       };
       reader.readAsDataURL(file);
     });
-  }, [uploadedPhotos.length]);
+  }, [photos.length]);
 
-  const removePhoto = useCallback((index: number) => {
-    setUploadedPhotos(prev => prev.filter((_, i) => i !== index));
-  }, []);
+  // ─── Run Full Analysis ────────────────────────────────────────
 
-  const runAiRepairEstimate = async () => {
-    if (uploadedPhotos.length === 0) return;
-    setAiRepairLoading(true);
-    setAiRepairError(null);
-    try {
-      const res = await fetch('/api/estimate-repairs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          property: subject,
-          photos: uploadedPhotos.map(p => p.dataUrl),
-          mode: 'ai_photo',
-        }),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'AI repair estimate failed');
-      }
-      const result: RepairEstimate = await res.json();
-      setAiRepairEstimate(result);
-      setAiRepairOverrides({});
-      setRepairMode('ai');
-    } catch (err: unknown) {
-      setAiRepairError(err instanceof Error ? err.message : 'AI repair estimate failed');
-    } finally {
-      setAiRepairLoading(false);
-    }
+  const updateStep = (idx: number, update: Partial<AnalysisStep>) => {
+    setAnalysisSteps(prev => prev.map((s, i) => i === idx ? { ...s, ...update } : s));
   };
 
-  const runAlgorithmicEstimate = async () => {
-    setAiRepairLoading(true);
-    setAiRepairError(null);
-    try {
-      const res = await fetch('/api/estimate-repairs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ property: subject, mode: 'algorithmic' }),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Algorithmic estimate failed');
-      }
-      const result: RepairEstimate = await res.json();
-      setAiRepairEstimate(result);
-      setAiRepairOverrides({});
-      setRepairMode('ai');
-    } catch (err: unknown) {
-      setAiRepairError(err instanceof Error ? err.message : 'Estimate failed');
-    } finally {
-      setAiRepairLoading(false);
-    }
-  };
+  const runAnalysis = async () => {
+    if (!subject.address) return;
+    setStep('loading');
+    setReport(null);
+    setAiAnalysis(null);
 
-  // ─── Engine calculations (reactive) ──────────────────────────────
-
-  const { filtered, adjusted, arvResult, repairEstimate, maoResult } = useMemo(() => {
-    // Prepare comps with overrides
-    const compsForEngine = rawComps.map((c, i) => ({
-      ...c,
-      force_include: overriddenComps.has(i),
-    }));
-
-    const filtered = filterComps(subject, compsForEngine);
-    const allProcessed = [
-      ...filtered.qualified.map((c) => ({
-        ...c,
-        _origIdx: rawComps.findIndex(r => r.address === c.address),
-        _status: (c.warnings && c.warnings.length > 0) ? 'flagged' as const : 'qualified' as const,
-        selected: !deselectedComps.has(rawComps.findIndex(r => r.address === c.address)),
-      })),
-      ...filtered.disqualified.map((c) => ({
-        ...c,
-        _origIdx: rawComps.findIndex(r => r.address === c.address),
-        _status: 'disqualified' as const,
-        selected: overriddenComps.has(rawComps.findIndex(r => r.address === c.address)),
-      })),
+    const steps: AnalysisStep[] = [
+      { label: 'Looking up property details...', status: 'pending' },
+      { label: 'Pulling comparable sales...', status: 'pending' },
+      { label: 'Filtering comps (7 appraisal rules)...', status: 'pending' },
+      { label: 'Applying adjustments...', status: 'pending' },
+      { label: 'Calculating ARV...', status: 'pending' },
+      { label: photos.length > 0 ? 'Analyzing photos for repairs...' : 'Estimating repairs...', status: 'pending' },
+      { label: 'Running offer strategies...', status: 'pending' },
+      { label: 'Generating report...', status: 'pending' },
     ];
+    setAnalysisSteps(steps);
 
-    // Get selected comps for adjustment
-    const selectedForAdjust = allProcessed.filter(c => c.selected && (c._status !== 'disqualified' || overriddenComps.has(c._origIdx)));
-    const adjusted = adjustComps(subject, selectedForAdjust);
+    let currentSubject = { ...subject };
+    let rawComps: Record<string, unknown>[] = [];
+    let propertyForComps: Record<string, unknown> = currentSubject;
 
-    const effectiveArv = arvOverride != null ? arvOverride : null;
-    const arvResult = adjusted.length > 0 ? calculateARV(subject, adjusted) : null;
-    const finalArv = effectiveArv ?? (arvResult?.arv ?? 0);
+    try {
+      // Step 0: Property lookup
+      updateStep(0, { status: 'running' });
+      try {
+        const lookupRes = await fetch('/api/property-lookup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ address: subject.address, city: subject.city, state: subject.state, zip: subject.zip }),
+        });
+        const lookupData = await lookupRes.json();
+        if (lookupData.available && lookupData.property) {
+          const p = lookupData.property;
+          currentSubject = {
+            ...currentSubject,
+            address: p.address || currentSubject.address,
+            city: p.city || currentSubject.city,
+            state: p.state || currentSubject.state,
+            zip: p.zip || currentSubject.zip,
+            beds: p.beds ?? currentSubject.beds,
+            baths: p.baths ?? currentSubject.baths,
+            sqft: p.sqft ?? currentSubject.sqft,
+            lot_sqft: p.lot_sqft ?? currentSubject.lot_sqft,
+            year_built: p.year_built ?? currentSubject.year_built,
+            property_type: p.property_type || currentSubject.property_type,
+            has_pool: p.has_pool ?? currentSubject.has_pool,
+            has_garage: p.has_garage ?? currentSubject.has_garage,
+            garage_count: p.garage_count ?? currentSubject.garage_count,
+            has_carport: p.has_carport ?? currentSubject.has_carport,
+            has_basement: p.has_basement ?? currentSubject.has_basement,
+            basement_sqft: p.basement_sqft ?? currentSubject.basement_sqft,
+            has_guest_house: p.has_guest_house ?? currentSubject.has_guest_house,
+            guest_house_sqft: p.guest_house_sqft ?? currentSubject.guest_house_sqft,
+            tax_assessed_value: p.tax_assessed_value ?? null,
+            last_sale_price: p.last_sale_price ?? null,
+            last_sale_date: p.last_sale_date ?? null,
+            subdivision: p.subdivision ?? null,
+          };
+          propertyForComps = p;
+          setSubject(currentSubject);
+          updateStep(0, { status: 'done', detail: `${currentSubject.beds}bd/${currentSubject.baths}ba, ${currentSubject.sqft?.toLocaleString()} sqft` });
+        } else {
+          updateStep(0, { status: 'done', detail: 'Manual entry — no API data' });
+        }
+      } catch {
+        updateStep(0, { status: 'done', detail: 'No API — using manual data' });
+      }
 
-    // Repair estimate
-    let repairEstimate = 0;
-    if (repairMode === 'ai' && aiRepairEstimate) {
-      // AI mode: use recommended values with any overrides applied
-      repairEstimate = aiRepairEstimate.line_items.reduce((sum, item) => {
-        const override = aiRepairOverrides[item.category];
-        return sum + (override != null ? override : item.recommended);
-      }, 0);
-    } else if (repairMode === 'quick') {
-      repairEstimate = quickRepairRate * (subject.sqft || 1500);
-    } else {
-      repairEstimate = repairItems.reduce((sum, item) => {
-        if (!item.enabled) return sum;
-        const mult = item.key === 'bathrooms' ? (subject.baths || 1) : 1;
-        return sum + (item.value * mult);
-      }, 0);
-      repairEstimate += otherRepairAmount;
+      // Step 1: Pull comps
+      updateStep(1, { status: 'running' });
+      try {
+        const compsRes = await fetch('/api/pull-comps', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ property: propertyForComps }),
+        });
+        const compsData = await compsRes.json();
+        if (compsData.available && compsData.comps?.length > 0) {
+          rawComps = compsData.comps;
+          updateStep(1, { status: 'done', detail: `${rawComps.length} comps found` });
+        } else {
+          updateStep(1, { status: 'done', detail: 'No comps from API' });
+        }
+      } catch {
+        updateStep(1, { status: 'done', detail: 'No API — add comps manually' });
+      }
+
+      // Step 2: Filter comps
+      updateStep(2, { status: 'running' });
+      const filtered = filterComps(currentSubject, rawComps);
+      const qualified = filtered.qualified;
+      const disqualified = filtered.disqualified;
+      updateStep(2, { status: 'done', detail: `${qualified.length} qualified, ${disqualified.length} excluded` });
+
+      // Step 3: Adjust comps
+      updateStep(3, { status: 'running' });
+      const adjusted = adjustComps(currentSubject, qualified);
+      const totalAdj = adjusted.reduce((s, c) => s + Math.abs(c.total_adjustment), 0);
+      updateStep(3, { status: 'done', detail: `${adjusted.length} comps adjusted, ${money(totalAdj)} total adjustments` });
+
+      // Step 4: Calculate ARV
+      updateStep(4, { status: 'running' });
+      const arvResult = adjusted.length > 0 ? calculateARV(currentSubject, adjusted) : null;
+      updateStep(4, { status: 'done', detail: arvResult ? `${money(arvResult.arv)} (${arvResult.confidence} confidence)` : 'No comps for ARV' });
+
+      // Step 5: Repair estimate
+      updateStep(5, { status: 'running' });
+      let repairEstimate: RepairEstimate | null = null;
+      try {
+        const repairRes = await fetch('/api/estimate-repairs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            property: currentSubject,
+            photos: photos.length > 0 ? photos.map(p => p.dataUrl) : undefined,
+            mode: photos.length > 0 ? 'ai_photo' : 'algorithmic',
+          }),
+        });
+        if (repairRes.ok) {
+          repairEstimate = await repairRes.json();
+          updateStep(5, { status: 'done', detail: `${money(repairEstimate?.total_recommended)} (${repairEstimate?.mode === 'ai_photo' ? 'AI photo' : 'algorithmic'})` });
+        } else {
+          updateStep(5, { status: 'done', detail: 'Estimate unavailable' });
+        }
+      } catch {
+        updateStep(5, { status: 'done', detail: 'Estimate failed' });
+      }
+
+      // Step 6: Offer strategies
+      updateStep(6, { status: 'running' });
+      let allOffers: AllOffers | null = null;
+      let negotiationGuide: NegotiationGuide | null = null;
+      const arv = arvResult?.arv ?? 0;
+      const repairs = repairEstimate?.total_recommended ?? 0;
+      if (arv > 0) {
+        // Import dynamically to avoid SSR issues with the JS module
+        const { calculateAllOffers, generateNegotiationGuide } = await import('@/lib/offerCalculator');
+        allOffers = calculateAllOffers({
+          arv,
+          repairs,
+          asking_price: currentSubject.asking_price,
+          property: currentSubject,
+          market_rent: currentSubject.monthly_rent,
+        });
+        negotiationGuide = generateNegotiationGuide(allOffers, currentSubject.asking_price);
+        updateStep(6, { status: 'done', detail: `Best: ${allOffers.best_strategy}` });
+      } else {
+        updateStep(6, { status: 'done', detail: 'Need ARV for offers' });
+      }
+
+      // Step 7: Generate report
+      updateStep(7, { status: 'running' });
+      const confidence = arvResult?.confidence ?? 'low';
+      const fullReport: FullReport = {
+        subject: currentSubject,
+        photos,
+        rawComps,
+        qualified,
+        disqualified,
+        adjusted,
+        arvResult,
+        repairEstimate,
+        allOffers,
+        negotiationGuide,
+        generatedAt: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+        confidence,
+      };
+      setReport(fullReport);
+      updateStep(7, { status: 'done', detail: 'Complete' });
+
+      // Transition to report
+      setTimeout(() => setStep('report'), 600);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Analysis failed';
+      setAnalysisSteps(prev => prev.map(s => s.status === 'running' ? { ...s, status: 'error', detail: msg } : s));
     }
+  };
 
-    const maoResult = finalArv > 0
-      ? calculateMAO(finalArv, repairEstimate, subject.asking_price, null, arvResult?.confidence ?? 'low')
-      : null;
-
-    return { filtered: allProcessed, adjusted, arvResult, repairEstimate, maoResult };
-  }, [subject, rawComps, overriddenComps, deselectedComps, arvOverride, repairMode, quickRepairRate, repairItems, otherRepairAmount, aiRepairEstimate, aiRepairOverrides]);
-
-  const qualifiedCount = filtered.filter(c => c._status === 'qualified').length;
-  const flaggedCount = filtered.filter(c => c._status === 'flagged').length;
-  const disqualifiedCount = filtered.filter(c => c._status === 'disqualified').length;
-  const finalArv = arvOverride ?? (arvResult?.arv ?? 0);
-
-  // ─── Save to Pipeline ────────────────────────────────────────────
+  // ─── Save to Pipeline ─────────────────────────────────────────
 
   const saveToPipeline = async () => {
+    if (!report) return;
     setSaving(true);
     try {
-      const res = await fetch('/api/deals', {
+      const r = report;
+      await fetch('/api/deals', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ...subject,
-          arv_raw: arvResult?.arv,
-          arv_adjusted: finalArv,
-          repair_estimate: repairEstimate,
-          mao: maoResult?.mao,
-          assignment_fee: maoResult?.assignment_fee,
-          recommendation: maoResult?.recommendation,
-          confidence: arvResult?.confidence,
+          ...r.subject,
+          arv_raw: r.arvResult?.arv,
+          arv_adjusted: r.arvResult?.arv,
+          repair_estimate: r.repairEstimate?.total_recommended,
+          mao: r.allOffers?.cash.mao,
+          assignment_fee: r.allOffers?.cash.assignment_fee.target,
+          recommendation: r.allOffers?.best_strategy === 'Pass' ? 'pass' : r.allOffers?.cash.works ? 'go' : 'negotiate',
+          confidence: r.confidence,
           status: 'analyzing',
-          comps_data: JSON.stringify(adjusted),
-          repair_breakdown: JSON.stringify(repairMode === 'quick'
-            ? { mode: 'quick', rate: quickRepairRate, sqft: subject.sqft, total: repairEstimate }
-            : { mode: 'detailed', items: repairItems.filter(i => i.enabled), other: { label: otherRepairLabel, amount: otherRepairAmount }, total: repairEstimate }
-          ),
-          adjustments_applied: JSON.stringify(arvResult?.adjustments_summary),
+          comps_data: JSON.stringify(r.adjusted),
+          repair_breakdown: JSON.stringify(r.repairEstimate),
+          adjustments_applied: JSON.stringify(r.arvResult?.adjustments_summary),
         }),
       });
-      const deal = await res.json();
-      saveRecentAddress(subject.address);
-      router.push(`/analyze/${deal.id}`);
+      setSaving(false);
+      router.push('/pipeline');
     } catch {
       setSaving(false);
     }
   };
 
-  // ─── AI Analysis ────────────────────────────────────────────────
+  // ─── AI Second Opinion ────────────────────────────────────────
 
-  const runAiAnalysis = async () => {
-    if (!arvResult || !maoResult) return;
-
-    // Build cache key from inputs that matter
-    const cacheData = JSON.stringify({
-      subject, arv: arvResult.arv, mao: maoResult.mao, repair: repairEstimate,
-      comps: adjusted.map(c => c.address).sort(),
-    });
-    if (cacheData === aiCacheKey && aiAnalysis) return; // Already cached
-
+  const runAiOpinion = async () => {
+    if (!report || !report.arvResult || !report.allOffers) return;
     setAiLoading(true);
-    setAiError(null);
     try {
-      const repairBreakdown = repairMode === 'quick'
-        ? `${quickRepairRate}/sqft quick estimate`
-        : repairItems.filter(i => i.enabled).map(i => `${i.label}: $${i.value.toLocaleString()}`).join(', ') + (otherRepairAmount > 0 ? `, Other: $${otherRepairAmount.toLocaleString()}` : '');
-
+      const r = report;
       const res = await fetch('/api/ai-analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          subject,
-          compsUsed: adjusted.map(c => ({
+          subject: r.subject,
+          compsUsed: r.adjusted.map(c => ({
             address: c.address, sale_price: c.sale_price, adjusted_price: c.adjusted_price,
-            days_old: c.days_old, sqft: c.sqft, distance_miles: c.distance_miles,
-            adjustments: c.adjustments,
+            days_old: c.days_old, sqft: c.sqft, distance_miles: c.distance_miles, adjustments: c.adjustments,
           })),
-          compsDisqualified: filtered.filter(c => c._status === 'disqualified' && !c.selected).map(c => ({
+          compsDisqualified: r.disqualified.map((c: Record<string, unknown>) => ({
             address: c.address, sale_price: c.sale_price, disqualified_reasons: c.disqualified_reasons,
           })),
-          arvResult,
-          maoResult,
-          repairEstimate,
-          repairBreakdown,
+          arvResult: r.arvResult,
+          maoResult: { mao: r.allOffers!.cash.mao, breakdown: { asking_price: r.subject.asking_price, spread: r.allOffers!.cash.spread } },
+          repairEstimate: r.repairEstimate?.total_recommended ?? 0,
+          repairBreakdown: r.repairEstimate?.line_items.map(i => `${i.category}: ${money(i.recommended)}`).join(', ') ?? '',
         }),
       });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'AI analysis failed');
+      if (res.ok) {
+        setAiAnalysis(await res.json());
       }
-
-      const result: AIAnalysisResult = await res.json();
-      setAiAnalysis(result);
-      setAiCacheKey(cacheData);
-      setAiExpanded(true);
-    } catch (err: unknown) {
-      setAiError(err instanceof Error ? err.message : 'AI analysis failed');
-    } finally {
-      setAiLoading(false);
-    }
+    } catch { /* ignore */ }
+    setAiLoading(false);
   };
 
-  // ─── Add manual comp ─────────────────────────────────────────────
-
-  const addManualComp = (comp: Comp) => {
-    setRawComps(prev => [...prev, comp]);
-    setShowAddComp(false);
-  };
-
-  // ─── Traffic note helper ──────────────────────────────────────────
-
-  const trafficNote = useMemo(() => {
-    const tc = subject.traffic_commercial;
-    if (tc === 'none') return null;
-    const under = ADJUSTMENTS.traffic.under500k;
-    const over = ADJUSTMENTS.traffic.over500k;
-    const flat = under[tc as keyof typeof under];
-    const pct = over[tc as keyof typeof over];
-    return `Under $500K: -$${(flat as number).toLocaleString()} | Over $500K: -${((pct as number) * 100).toFixed(0)}%`;
-  }, [subject.traffic_commercial]);
-
-  // ─── Adjustment summary ──────────────────────────────────────────
-
-  const adjustmentSummary = useMemo(() => {
-    const summary: Record<string, { count: number; net: number }> = {};
-    for (const comp of adjusted) {
-      for (const adj of (comp.adjustments || [])) {
-        if (adj.amount === 0) continue;
-        if (!summary[adj.type]) summary[adj.type] = { count: 0, net: 0 };
-        summary[adj.type].count++;
-        summary[adj.type].net += adj.amount;
-      }
-    }
-    return summary;
-  }, [adjusted]);
-
-  // ═════════════════════════════════════════════════════════════════════
+  // ═════════════════════════════════════════════════════════════════
   // RENDER
-  // ═════════════════════════════════════════════════════════════════════
+  // ═════════════════════════════════════════════════════════════════
 
   return (
     <div className="min-h-screen bg-background">
       <Navbar />
       <main className="mx-auto max-w-6xl px-6 py-8">
-        {/* Step Indicator */}
-        <StepIndicator current={step} onStep={setStep} hasAddress={!!subject.address} hasComps={rawComps.length > 0} />
 
-        {/* ═══ STEP 1: ADDRESS ═══ */}
-        {step === 'address' && (
+        {/* ═══ STEP 1: INPUT ═══ */}
+        {step === 'input' && (
           <div className="animate-fadeIn">
-            <div className="rounded-xl border border-border bg-card p-8 max-w-2xl mx-auto">
-              <h2 className="text-xl font-bold text-foreground mb-1">Analyze a Property</h2>
-              <p className="text-sm text-muted mb-6">Enter the subject property address to begin underwriting.</p>
+            <h1 className="text-2xl font-bold text-foreground mb-1">New Deal Analysis</h1>
+            <p className="text-sm text-muted mb-8">Enter property details and run a full CMA with offer strategies.</p>
 
-              <input
-                type="text"
-                placeholder="Enter property address..."
-                value={subject.address}
-                onChange={e => setSubject(s => ({ ...s, address: e.target.value }))}
-                className="w-full rounded-xl border border-border bg-background px-5 py-4 text-lg text-foreground placeholder:text-muted/50 focus:border-accent focus:outline-none transition-colors mb-4"
-              />
-              <div className="grid grid-cols-3 gap-3 mb-6">
-                <input placeholder="City" value={subject.city} onChange={e => setSubject(s => ({ ...s, city: e.target.value }))} className="input-std" />
-                <input placeholder="State" value={subject.state} onChange={e => setSubject(s => ({ ...s, state: e.target.value }))} className="input-std" />
-                <input placeholder="ZIP" value={subject.zip} onChange={e => setSubject(s => ({ ...s, zip: e.target.value }))} className="input-std" />
-              </div>
-
-              <button
-                onClick={handlePullData}
-                disabled={!subject.address || autoPullLoading}
-                className="w-full rounded-xl bg-accent py-4 text-base font-semibold text-white transition-all hover:bg-accent/80 disabled:opacity-30 disabled:cursor-not-allowed"
-              >
-                {autoPullLoading ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
-                    Pulling property data &amp; comps...
-                  </span>
-                ) : autoPullAvailable ? 'Pull Data & Analyze' : 'Enter Details Manually'}
-              </button>
-              {autoPullAvailable === false && (
-                <p className="text-xs text-muted/60 text-center mt-2">No RE data API configured. You can enter property details and comps manually.</p>
-              )}
-              {autoPullError && (
-                <p className="text-xs text-amber-400 text-center mt-2">{autoPullError}</p>
-              )}
-
-              {recentAddresses.length > 0 && (
-                <div className="mt-5">
-                  <p className="text-xs text-muted mb-2">Recent</p>
-                  <div className="flex flex-wrap gap-2">
-                    {recentAddresses.map(addr => (
-                      <button
-                        key={addr}
-                        onClick={() => setSubject(s => ({ ...s, address: addr }))}
-                        className="rounded-full border border-border px-3 py-1 text-xs text-muted hover:text-foreground hover:border-accent/30 transition-colors"
-                      >
-                        {addr}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* ═══ STEP 2: PROPERTY DETAILS ═══ */}
-        {step === 'details' && (
-          <div className="animate-fadeIn">
-            {autoPullAvailable && rawComps.length > 0 && (
-              <div className="mb-4 rounded-xl border border-green-500/20 bg-green-500/5 px-4 py-3 flex items-center gap-2">
-                <span className="text-green-400 text-sm">&#10003;</span>
-                <p className="text-sm text-green-300">
-                  Auto-pulled property data and {rawComps.length} comp{rawComps.length !== 1 ? 's' : ''}. Verify details below.
-                </p>
-              </div>
-            )}
-            {autoPullError && (
-              <div className="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3">
-                <p className="text-sm text-amber-300">{autoPullError}</p>
-              </div>
-            )}
-            <div className="grid grid-cols-2 gap-6">
-              {/* Left: Basic Info */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+              {/* Left: Address */}
               <div className="rounded-xl border border-border bg-card p-6">
-                <h3 className="text-sm font-semibold text-accent mb-4">Basic Info</h3>
-                <div className="grid grid-cols-2 gap-3">
-                  <LabelInput label="Beds" type="number" value={subject.beds} onChange={v => setSubject(s => ({ ...s, beds: v ? Number(v) : null }))} />
-                  <LabelInput label="Baths" type="number" step="0.5" value={subject.baths} onChange={v => setSubject(s => ({ ...s, baths: v ? Number(v) : null }))} />
-                  <LabelInput label="Sqft" type="number" value={subject.sqft} onChange={v => setSubject(s => ({ ...s, sqft: v ? Number(v) : null }))} />
-                  <LabelInput label="Lot Sqft" type="number" value={subject.lot_sqft} onChange={v => setSubject(s => ({ ...s, lot_sqft: v ? Number(v) : null }))} />
-                  <LabelInput label="Year Built" type="number" value={subject.year_built} onChange={v => setSubject(s => ({ ...s, year_built: v ? Number(v) : null }))} />
-                  <div>
-                    <label className="block text-xs text-muted mb-1">Property Type</label>
-                    <select value={subject.property_type} onChange={e => setSubject(s => ({ ...s, property_type: e.target.value }))} className="input-std w-full">
-                      {PROPERTY_TYPES.map(t => <option key={t} value={t}>{t.charAt(0).toUpperCase() + t.slice(1)}</option>)}
-                    </select>
-                  </div>
+                <h3 className="text-sm font-semibold text-accent mb-4">Property Address</h3>
+                <input
+                  type="text"
+                  placeholder="Enter property address..."
+                  value={subject.address}
+                  onChange={e => setSubject(s => ({ ...s, address: e.target.value }))}
+                  className="w-full rounded-xl border border-border bg-background px-5 py-4 text-lg text-foreground placeholder:text-muted/50 focus:border-accent focus:outline-none transition-colors mb-3"
+                />
+                <div className="grid grid-cols-3 gap-3">
+                  <input placeholder="City" value={subject.city} onChange={e => setSubject(s => ({ ...s, city: e.target.value }))} className="input-std" />
+                  <input placeholder="State" value={subject.state} onChange={e => setSubject(s => ({ ...s, state: e.target.value }))} className="input-std" />
+                  <input placeholder="ZIP" value={subject.zip} onChange={e => setSubject(s => ({ ...s, zip: e.target.value }))} className="input-std" />
                 </div>
               </div>
 
-              {/* Right: Features */}
+              {/* Right: Photos */}
               <div className="rounded-xl border border-border bg-card p-6">
-                <h3 className="text-sm font-semibold text-accent mb-4">Features</h3>
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-xs text-muted mb-1">Condition</label>
-                    <select value={subject.condition} onChange={e => setSubject(s => ({ ...s, condition: e.target.value }))} className="input-std w-full">
-                      {CONDITIONS.map(c => <option key={c} value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>)}
-                    </select>
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-3">
-                    <Toggle label="Pool" value={subject.has_pool} onChange={v => setSubject(s => ({ ...s, has_pool: v }))} />
-                    <Toggle label="Carport" value={subject.has_carport} onChange={v => setSubject(s => ({ ...s, has_carport: v }))} />
-                    <Toggle label="Garage" value={subject.has_garage} onChange={v => setSubject(s => ({ ...s, has_garage: v, garage_count: v ? Math.max(s.garage_count, 1) : 0 }))} />
-                  </div>
-
-                  {subject.has_garage && (
-                    <div className="animate-fadeIn">
-                      <label className="block text-xs text-muted mb-1">Garage Bays</label>
-                      <div className="flex gap-2">
-                        {[1, 2, 3, 4].map(n => (
-                          <button key={n} onClick={() => setSubject(s => ({ ...s, garage_count: n }))}
-                            className={`rounded-lg px-4 py-1.5 text-sm font-medium border transition-colors ${subject.garage_count === n ? 'bg-accent/10 border-accent text-accent' : 'border-border text-muted hover:border-accent/30'}`}>
-                            {n}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <Toggle label="Basement" value={subject.has_basement} onChange={v => setSubject(s => ({ ...s, has_basement: v, basement_sqft: v ? s.basement_sqft : 0 }))} />
-                    <Toggle label="Guest House" value={subject.has_guest_house} onChange={v => setSubject(s => ({ ...s, has_guest_house: v, guest_house_sqft: v ? s.guest_house_sqft : 0 }))} />
-                  </div>
-
-                  {subject.has_basement && (
-                    <div className="animate-fadeIn">
-                      <LabelInput label="Basement Sqft" type="number" value={subject.basement_sqft || ''} onChange={v => setSubject(s => ({ ...s, basement_sqft: Number(v) || 0 }))} />
-                      <p className="text-[11px] text-negotiate mt-1">Basement sqft valued at 50% of $/sqft</p>
-                    </div>
-                  )}
-                  {subject.has_guest_house && (
-                    <div className="animate-fadeIn">
-                      <LabelInput label="Guest House Sqft" type="number" value={subject.guest_house_sqft || ''} onChange={v => setSubject(s => ({ ...s, guest_house_sqft: Number(v) || 0 }))} />
-                      <p className="text-[11px] text-negotiate mt-1">Guest house sqft valued at 50% of $/sqft</p>
-                    </div>
-                  )}
-
-                  <div>
-                    <label className="block text-xs text-muted mb-1">Traffic / Commercial Exposure</label>
-                    <select value={subject.traffic_commercial} onChange={e => setSubject(s => ({ ...s, traffic_commercial: e.target.value }))} className="input-std w-full">
-                      {TRAFFIC_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                    </select>
-                    {trafficNote && <p className="text-[11px] text-negotiate mt-1">{trafficNote}</p>}
-                  </div>
-
-                  <LabelInput label="Asking Price ($)" type="number" value={subject.asking_price} onChange={v => setSubject(s => ({ ...s, asking_price: v ? Number(v) : null }))} />
-                </div>
-              </div>
-            </div>
-            <div className="flex justify-end mt-6">
-              <button onClick={() => setStep('comps')} className="rounded-xl bg-accent px-8 py-3 text-sm font-semibold text-white hover:bg-accent/80 transition-colors">
-                Continue to Comps &rarr;
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* ═══ STEP 3: COMPS TABLE ═══ */}
-        {step === 'comps' && (
-          <div className="animate-fadeIn">
-            {/* Header */}
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <h2 className="text-lg font-bold text-foreground">Comparable Sales</h2>
-                <span className="rounded-full bg-accent/10 px-2.5 py-0.5 text-xs font-semibold text-accent">{rawComps.length}</span>
-              </div>
-              <button onClick={() => setShowAddComp(true)} className="rounded-lg border border-accent/30 px-4 py-2 text-sm font-medium text-accent hover:bg-accent/10 transition-colors">
-                + Add Comp Manually
-              </button>
-            </div>
-
-            {/* Search Expansion Warnings */}
-            {compPullExpansions.length > 0 && (
-              <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-2.5 mb-4">
-                {compPullExpansions.map((exp, i) => (
-                  <p key={i} className="text-xs text-amber-300 flex items-center gap-1.5">
-                    <span>&#9888;</span> {exp}
-                  </p>
-                ))}
-              </div>
-            )}
-
-            {/* Filter Status Bar */}
-            <div className="rounded-lg border border-border bg-card/50 px-4 py-2.5 mb-4 flex items-center gap-4 text-xs text-muted overflow-x-auto">
-              <FilterBadge label={`Within ${COMP_RULES.maxAge} days`} />
-              <FilterBadge label={`+/- ${COMP_RULES.maxSqftDifference} sqft`} />
-              <FilterBadge label="Same type" />
-              <FilterBadge label={`+/- ${COMP_RULES.maxYearBuiltDifference}yr build`} />
-              <FilterBadge label={`+/- ${COMP_RULES.maxLotSqftDifference.toLocaleString()} lot sqft`} />
-            </div>
-
-            {rawComps.length === 0 ? (
-              <div className="rounded-xl border border-border bg-card p-12 text-center">
-                <p className="text-muted mb-2">No comps added yet</p>
-                <p className="text-xs text-muted/60 mb-4">Add comps manually to begin analysis</p>
-                <button onClick={() => setShowAddComp(true)} className="rounded-lg bg-accent px-5 py-2.5 text-sm font-semibold text-white hover:bg-accent/80 transition-colors">
-                  + Add First Comp
-                </button>
-              </div>
-            ) : (
-              <>
-                {/* Comps Table */}
-                <div className="rounded-xl border border-border bg-card overflow-hidden mb-4">
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-border text-xs text-muted">
-                          <th className="text-left py-3 px-3 w-8"></th>
-                          <th className="text-left py-3 px-2 w-8"></th>
-                          <th className="text-left py-3 px-2">Address</th>
-                          <th className="text-right py-3 px-2">Sale Price</th>
-                          <th className="text-right py-3 px-2">Adjusted</th>
-                          <th className="text-right py-3 px-2">Sale Date</th>
-                          <th className="text-right py-3 px-2">Sqft</th>
-                          <th className="text-right py-3 px-2">Bd/Ba</th>
-                          <th className="text-right py-3 px-2">Yr Built</th>
-                          <th className="text-right py-3 px-2">Lot</th>
-                          <th className="text-right py-3 px-2">Dist</th>
-                          <th className="text-center py-3 px-2">Subdiv</th>
-                          <th className="text-left py-3 px-2">Adjustments</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filtered.map((comp, idx) => {
-                          const origIdx = comp._origIdx;
-                          const isDQ = comp._status === 'disqualified';
-                          const isFlagged = comp._status === 'flagged';
-                          const isOverridden = overriddenComps.has(origIdx);
-                          const isDeselected = deselectedComps.has(origIdx);
-                          const isSelected = isDQ ? isOverridden : !isDeselected;
-                          const adjComp = adjusted.find(a => a.address === comp.address);
-                          const adjPrice = adjComp?.adjusted_price ?? comp.sale_price;
-                          const adjDiff = adjComp ? adjComp.total_adjustment : 0;
-                          const sqftDiff = subject.sqft && comp.sqft ? Math.abs(subject.sqft - comp.sqft) : 0;
-                          const sqftOutOfRange = sqftDiff > COMP_RULES.maxSqftDifference;
-
-                          return (
-                            <tr key={idx} className={`border-b border-border/40 transition-colors ${isDQ && !isOverridden ? 'opacity-40 bg-pass/5' : ''} ${isFlagged ? 'bg-negotiate/5' : ''} ${isOverridden ? 'bg-negotiate/10' : ''} hover:bg-white/[0.02]`}>
-                              <td className="py-2.5 px-3">
-                                <input
-                                  type="checkbox"
-                                  checked={isSelected}
-                                  onChange={() => {
-                                    if (isDQ) {
-                                      setOverriddenComps(prev => {
-                                        const next = new Set(prev);
-                                        if (next.has(origIdx)) next.delete(origIdx); else next.add(origIdx);
-                                        return next;
-                                      });
-                                    } else {
-                                      setDeselectedComps(prev => {
-                                        const next = new Set(prev);
-                                        if (next.has(origIdx)) next.delete(origIdx); else next.add(origIdx);
-                                        return next;
-                                      });
-                                    }
-                                  }}
-                                  className="accent-accent"
-                                />
-                              </td>
-                              <td className="py-2.5 px-2">
-                                {isDQ ? (
-                                  <span className="text-pass text-base cursor-help" title={comp.disqualified_reasons?.join('; ')}>&#10060;</span>
-                                ) : isFlagged ? (
-                                  <span className="text-negotiate text-base cursor-help" title={comp.warnings?.join('; ')}>&#9888;&#65039;</span>
-                                ) : (
-                                  <span className="text-go text-base">&#9989;</span>
-                                )}
-                              </td>
-                              <td className="py-2.5 px-2 text-foreground font-medium max-w-[180px] truncate">{comp.address}</td>
-                              <td className="py-2.5 px-2 text-right text-gold" style={mono}>{money(comp.sale_price)}</td>
-                              <td className="py-2.5 px-2 text-right" style={mono}>
-                                <span className="text-gold">{money(adjPrice)}</span>
-                                {adjDiff !== 0 && (
-                                  <span className={`ml-1 text-[10px] ${adjDiff > 0 ? 'text-go' : 'text-pass'}`}>
-                                    {adjDiff > 0 ? '+' : ''}{money(adjDiff)}
-                                  </span>
-                                )}
-                              </td>
-                              <td className="py-2.5 px-2 text-right text-muted">
-                                {comp.sale_date}
-                                <span className="ml-1 text-[10px] text-muted/60">{comp.days_old}d</span>
-                              </td>
-                              <td className={`py-2.5 px-2 text-right ${sqftOutOfRange ? 'text-pass font-semibold' : 'text-muted'}`} style={mono}>
-                                {comp.sqft?.toLocaleString()}
-                              </td>
-                              <td className="py-2.5 px-2 text-right text-muted">{comp.beds}/{comp.baths}</td>
-                              <td className="py-2.5 px-2 text-right text-muted">{comp.year_built}</td>
-                              <td className="py-2.5 px-2 text-right text-muted" style={mono}>{comp.lot_sqft?.toLocaleString()}</td>
-                              <td className="py-2.5 px-2 text-right text-muted">{comp.distance_miles}mi</td>
-                              <td className="py-2.5 px-2 text-center">{comp.same_subdivision ? <span className="text-go">&#10003;</span> : <span className="text-pass">&#10007;</span>}</td>
-                              <td className="py-2.5 px-2">
-                                {adjComp?.adjustments && adjComp.adjustments.length > 0 ? (
-                                  <details className="text-xs">
-                                    <summary className="cursor-pointer text-accent hover:underline">{adjComp.adjustments.filter(a => a.amount !== 0).length} adj</summary>
-                                    <div className="mt-1 space-y-0.5 text-muted">
-                                      {adjComp.adjustments.filter(a => a.amount !== 0).map((a, ai) => (
-                                        <p key={ai}>{a.reason}</p>
-                                      ))}
-                                    </div>
-                                  </details>
-                                ) : isDQ ? (
-                                  <span className="text-[10px] text-pass">{comp.disqualified_reasons?.[0]}</span>
-                                ) : (
-                                  <span className="text-xs text-muted/40">--</span>
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                {/* Summary badges */}
-                <div className="flex items-center gap-4 mb-4 text-xs">
-                  <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-go" /> Qualified: {qualifiedCount}</span>
-                  <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-negotiate" /> Flagged: {flaggedCount}</span>
-                  <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-pass" /> Disqualified: {disqualifiedCount}</span>
-                </div>
-
-                {qualifiedCount + flaggedCount < 3 && (
-                  <div className="rounded-lg border border-negotiate/30 bg-negotiate/5 px-4 py-3 mb-4 text-sm text-negotiate">
-                    Low comp count ({qualifiedCount + flaggedCount} qualified) — ARV confidence will be LOW
-                  </div>
-                )}
-
-                {/* Comp Adjustments Breakdown */}
-                {Object.keys(adjustmentSummary).length > 0 && (
-                  <div className="rounded-xl border border-border bg-card mb-4">
-                    <button onClick={() => setShowCompAdjBreakdown(!showCompAdjBreakdown)} className="w-full flex items-center justify-between px-5 py-3 text-sm font-semibold text-foreground hover:bg-white/[0.02] transition-colors">
-                      <span>Comp Adjustments Breakdown</span>
-                      <span className="text-muted text-xs">{showCompAdjBreakdown ? '▲' : '▼'}</span>
-                    </button>
-                    {showCompAdjBreakdown && (
-                      <div className="px-5 pb-4 space-y-1.5">
-                        {Object.entries(adjustmentSummary).map(([type, data]) => (
-                          <div key={type} className="flex items-center justify-between text-sm">
-                            <span className="text-muted capitalize">{type.replace(/_/g, ' ')} adjustments: {data.count} comp{data.count !== 1 ? 's' : ''}</span>
-                            <span className={data.net >= 0 ? 'text-go' : 'text-pass'} style={mono}>
-                              net {data.net >= 0 ? '+' : ''}{money(data.net)}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* ARV Calculation Box */}
-                {adjusted.length > 0 && arvResult && (
-                  <div className="rounded-xl border border-border bg-card p-6 mb-4">
-                    <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-sm font-semibold text-accent">ARV Calculation</h3>
-                      <ConfidenceBadge level={arvResult.confidence} />
-                    </div>
-                    <div className="grid grid-cols-2 gap-6">
-                      <div className="space-y-3">
-                        <div className="text-xs text-muted">Method: <span className="text-foreground">{arvResult.method}</span></div>
-                        <div>
-                          <p className="text-xs text-muted mb-1.5">Comps Used</p>
-                          {arvResult.comps_used.map((c: { address: string; sale_price: number; adjusted_price: number }, i: number) => (
-                            <div key={i} className="flex items-center justify-between text-xs py-0.5">
-                              <span className="text-muted truncate max-w-[180px]">{c.address}</span>
-                              <span className="text-gold" style={mono}>{money(c.adjusted_price)}</span>
-                            </div>
-                          ))}
-                        </div>
-                        {arvResult.warnings.length > 0 && (
-                          <div className="space-y-1">
-                            {arvResult.warnings.map((w: string, i: number) => (
-                              <p key={i} className="text-[11px] text-negotiate">{w}</p>
-                            ))}
-                          </div>
-                        )}
-                        <p className="text-[11px] text-muted">{arvResult.confidence_reasoning}</p>
-                      </div>
-                      <div className="space-y-3 text-right">
-                        <div>
-                          <p className="text-xs text-muted">RAW ARV</p>
-                          <p className="text-2xl font-bold text-accent" style={mono}>{money(arvResult.arv)}</p>
-                        </div>
-                        {subject.traffic_commercial !== 'none' && (
-                          <div>
-                            <p className="text-xs text-muted">Traffic/Commercial Adj</p>
-                            <p className="text-sm text-pass" style={mono}>{trafficNote}</p>
-                          </div>
-                        )}
-                        <div>
-                          <p className="text-xs text-muted">ADJUSTED ARV</p>
-                          <p className="text-3xl font-bold text-gold" style={mono}>{money(arvOverride ?? arvResult.arv)}</p>
-                        </div>
-                        {!showArvOverride ? (
-                          <button onClick={() => setShowArvOverride(true)} className="text-xs text-muted hover:text-accent transition-colors">
-                            Override ARV
-                          </button>
-                        ) : (
-                          <div className="flex items-center justify-end gap-2 animate-fadeIn">
-                            <input
-                              type="number"
-                              placeholder="Manual ARV"
-                              value={arvOverride ?? ''}
-                              onChange={e => setArvOverride(e.target.value ? Number(e.target.value) : null)}
-                              className="input-std w-32 text-right"
-                              style={mono}
-                            />
-                            <button onClick={() => { setArvOverride(null); setShowArvOverride(false); }} className="text-xs text-muted hover:text-pass">Reset</button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-
-            <div className="flex justify-between mt-6">
-              <button onClick={() => setStep('details')} className="rounded-xl border border-border px-6 py-3 text-sm text-muted hover:text-foreground transition-colors">
-                &larr; Property Details
-              </button>
-              <button onClick={() => setStep('repairs')} className="rounded-xl bg-accent px-8 py-3 text-sm font-semibold text-white hover:bg-accent/80 transition-colors">
-                Continue to Repairs &rarr;
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* ═══ STEP 4: REPAIR ESTIMATE ═══ */}
-        {step === 'repairs' && (
-          <div className="animate-fadeIn max-w-3xl mx-auto">
-            <h2 className="text-lg font-bold text-foreground mb-4">Repair Estimate</h2>
-
-            {/* Mode Toggle */}
-            <div className="flex rounded-lg border border-border overflow-hidden mb-6 w-fit">
-              <button onClick={() => { if (aiRepairEstimate) setRepairMode('ai'); else if (uploadedPhotos.length > 0) runAiRepairEstimate(); else runAlgorithmicEstimate(); }} className={`px-5 py-2 text-sm font-medium transition-colors ${repairMode === 'ai' ? 'bg-accent text-white' : 'text-muted hover:text-foreground'}`}>
-                {uploadedPhotos.length > 0 ? 'AI Estimate' : 'Smart Estimate'}
-              </button>
-              <button onClick={() => setRepairMode('quick')} className={`px-5 py-2 text-sm font-medium transition-colors ${repairMode === 'quick' ? 'bg-accent text-white' : 'text-muted hover:text-foreground'}`}>
-                Quick Mode
-              </button>
-              <button onClick={() => setRepairMode('detailed')} className={`px-5 py-2 text-sm font-medium transition-colors ${repairMode === 'detailed' ? 'bg-accent text-white' : 'text-muted hover:text-foreground'}`}>
-                Detailed Mode
-              </button>
-            </div>
-
-            {/* Photo Upload Zone */}
-            <div className="mb-6">
-              <div
-                onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('border-accent'); }}
-                onDragLeave={e => { e.currentTarget.classList.remove('border-accent'); }}
-                onDrop={e => { e.preventDefault(); e.currentTarget.classList.remove('border-accent'); handlePhotoUpload(e.dataTransfer.files); }}
-                onClick={() => document.getElementById('photo-upload-input')?.click()}
-                className="rounded-xl border-2 border-dashed border-border bg-card/30 p-6 text-center cursor-pointer hover:border-accent/50 transition-colors"
-              >
-                <input id="photo-upload-input" type="file" accept="image/jpeg,image/png,image/heic,image/heif" multiple className="hidden" onChange={e => { if (e.target.files) handlePhotoUpload(e.target.files); e.target.value = ''; }} />
-                <svg className="w-8 h-8 text-muted/40 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0022.5 18.75V5.25A2.25 2.25 0 0020.25 3H3.75A2.25 2.25 0 001.5 5.25v13.5A2.25 2.25 0 003.75 21z" />
-                </svg>
-                <p className="text-sm text-muted">Drop seller photos here or click to browse</p>
-                <p className="text-xs text-muted/50 mt-1">JPG, PNG, HEIC &middot; Max 10 photos &middot; AI analyzes visible repairs</p>
-              </div>
-
-              {/* Photo Thumbnails */}
-              {uploadedPhotos.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-3">
-                  {uploadedPhotos.map((photo, idx) => (
-                    <div key={idx} className="relative group">
-                      <img src={photo.dataUrl} alt={photo.name} className="w-20 h-20 object-cover rounded-lg border border-border" />
-                      <button onClick={(e) => { e.stopPropagation(); removePhoto(idx); }} className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-pass text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                        &times;
-                      </button>
-                      <select
-                        value={photo.label}
-                        onChange={e => setUploadedPhotos(prev => prev.map((p, i) => i === idx ? { ...p, label: e.target.value } : p))}
-                        onClick={e => e.stopPropagation()}
-                        className="absolute bottom-0 left-0 right-0 bg-background/80 text-[9px] text-muted border-0 py-0.5 px-1 rounded-b-lg backdrop-blur"
-                      >
-                        <option value="">Label...</option>
-                        <option value="Kitchen">Kitchen</option>
-                        <option value="Bathroom">Bathroom</option>
-                        <option value="Exterior">Exterior</option>
-                        <option value="Roof">Roof</option>
-                        <option value="Living Room">Living Room</option>
-                        <option value="Bedroom">Bedroom</option>
-                        <option value="Basement">Basement</option>
-                        <option value="Yard">Yard</option>
-                        <option value="Other">Other</option>
-                      </select>
-                    </div>
-                  ))}
-                  <div className="flex items-center">
-                    <span className="text-xs text-muted">{uploadedPhotos.length}/10</span>
-                  </div>
-                </div>
-              )}
-
-              {/* AI Action Buttons */}
-              {uploadedPhotos.length > 0 && !aiRepairEstimate && (
-                <button onClick={runAiRepairEstimate} disabled={aiRepairLoading} className="mt-3 rounded-lg bg-accent px-5 py-2 text-sm font-semibold text-white hover:bg-accent/80 transition-colors disabled:opacity-50">
-                  {aiRepairLoading ? (
-                    <span className="flex items-center gap-2">
-                      <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
-                      Analyzing photos...
-                    </span>
-                  ) : 'Analyze Photos with AI'}
-                </button>
-              )}
-              {uploadedPhotos.length === 0 && !aiRepairEstimate && (
-                <button onClick={runAlgorithmicEstimate} disabled={aiRepairLoading} className="mt-3 rounded-lg border border-accent/30 px-5 py-2 text-sm font-medium text-accent hover:bg-accent/10 transition-colors disabled:opacity-50">
-                  {aiRepairLoading ? 'Generating...' : 'Generate Smart Estimate'}
-                </button>
-              )}
-
-              {aiRepairError && (
-                <p className="mt-2 text-xs text-pass">{aiRepairError}</p>
-              )}
-            </div>
-
-            {/* ─── AI / Smart Estimate Results ─── */}
-            {repairMode === 'ai' && aiRepairEstimate && (
-              <div className="mb-6">
-                <div className="flex items-center gap-2 mb-3">
-                  <span className={`inline-block w-2 h-2 rounded-full ${aiRepairEstimate.mode === 'ai_photo' ? 'bg-accent' : 'bg-negotiate'}`} />
-                  <span className="text-xs text-muted">
-                    {aiRepairEstimate.mode === 'ai_photo' ? 'AI Photo Analysis' : 'Algorithmic Estimate'} &middot;
-                    Condition: <span className="text-foreground">{aiRepairEstimate.overall_condition}</span> &middot;
-                    Confidence: <span className={aiRepairEstimate.confidence === 'high' ? 'text-go' : aiRepairEstimate.confidence === 'medium' ? 'text-negotiate' : 'text-pass'}>{aiRepairEstimate.confidence}</span>
-                  </span>
-                </div>
-                {aiRepairEstimate.notes && (
-                  <p className="text-xs text-muted/70 mb-3 italic">{aiRepairEstimate.notes}</p>
-                )}
-                <div className="space-y-2">
-                  {aiRepairEstimate.line_items.map((item: RepairLineItem) => {
-                    const override = aiRepairOverrides[item.category];
-                    const currentValue = override != null ? override : item.recommended;
-                    return (
-                      <div key={item.category} className="rounded-lg border border-border bg-card px-4 py-3">
-                        <div className="flex items-center justify-between mb-1">
-                          <div className="flex items-center gap-2">
-                            <span className={`w-1.5 h-1.5 rounded-full ${item.urgency === 'high' ? 'bg-pass' : item.urgency === 'medium' ? 'bg-negotiate' : 'bg-go'}`} />
-                            <span className="text-sm text-foreground font-medium capitalize">{item.category.replace(/_/g, ' ')}</span>
-                          </div>
-                          <span className="text-sm text-gold font-semibold" style={mono}>{money(currentValue)}</span>
-                        </div>
-                        <p className="text-xs text-muted mb-2 ml-3.5">{item.description}</p>
-                        <div className="flex items-center gap-3 ml-3.5">
-                          <span className="text-[10px] text-muted" style={mono}>{money(item.estimate_low)}</span>
-                          <input
-                            type="range"
-                            min={item.estimate_low}
-                            max={item.estimate_high}
-                            step={500}
-                            value={currentValue}
-                            onChange={e => setAiRepairOverrides(prev => ({ ...prev, [item.category]: Number(e.target.value) }))}
-                            className="flex-1 accent-accent"
-                          />
-                          <span className="text-[10px] text-muted" style={mono}>{money(item.estimate_high)}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                {aiRepairEstimate.usage && (
-                  <p className="text-center text-xs text-muted/40 mt-3">AI analysis: ~$0.01 &middot; {aiRepairEstimate.usage.input_tokens + aiRepairEstimate.usage.output_tokens} tokens</p>
-                )}
-              </div>
-            )}
-
-            {/* ─── Quick Mode ─── */}
-            {repairMode === 'quick' && (
-              <>
-                <div className="grid grid-cols-3 gap-4 mb-6">
-                  <QuickRepairCard
-                    label="Light Rehab"
-                    range="$10-15/sqft"
-                    desc="Cosmetic only: paint, carpet, minor fixtures"
-                    color="go"
-                    active={quickRepairRate >= 10 && quickRepairRate <= 15}
-                    onClick={() => setQuickRepairRate(12)}
-                  />
-                  <QuickRepairCard
-                    label="Medium Rehab"
-                    range="$15-25/sqft"
-                    desc="Kitchen, bathrooms, flooring, some mechanicals"
-                    color="negotiate"
-                    active={quickRepairRate > 15 && quickRepairRate <= 25}
-                    onClick={() => setQuickRepairRate(20)}
-                  />
-                  <QuickRepairCard
-                    label="Heavy Rehab"
-                    range="$25-40/sqft"
-                    desc="Full gut: structural, all mechanicals, everything"
-                    color="pass"
-                    active={quickRepairRate > 25}
-                    onClick={() => setQuickRepairRate(32)}
-                  />
-                </div>
-                <div className="rounded-xl border border-border bg-card p-5 mb-6">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs text-muted">Rate: ${quickRepairRate}/sqft</span>
-                    <span className="text-xs text-muted">{subject.sqft?.toLocaleString() || '1,500'} sqft</span>
-                  </div>
-                  <input type="range" min="5" max="50" value={quickRepairRate} onChange={e => setQuickRepairRate(Number(e.target.value))} className="w-full accent-accent" />
-                </div>
-              </>
-            )}
-
-            {/* ─── Detailed Mode ─── */}
-            {repairMode === 'detailed' && (
-              <div className="space-y-3 mb-6">
-                {repairItems.map((item, idx) => (
-                  <RepairSlider
-                    key={item.key}
-                    item={item}
-                    bathCount={subject.baths || 1}
-                    onChange={(updated) => {
-                      setRepairItems(prev => prev.map((p, i) => i === idx ? updated : p));
-                    }}
-                  />
-                ))}
-                <div className="flex items-center gap-3 mt-2">
-                  <input placeholder="Other label" value={otherRepairLabel} onChange={e => setOtherRepairLabel(e.target.value)} className="input-std flex-1" />
-                  <input type="number" placeholder="$0" value={otherRepairAmount || ''} onChange={e => setOtherRepairAmount(Number(e.target.value) || 0)} className="input-std w-28" style={mono} />
-                </div>
-              </div>
-            )}
-
-            {/* Running Total */}
-            <div className="rounded-xl border border-gold/30 bg-card p-6 text-center">
-              <p className="text-xs text-muted mb-1">Estimated Repairs</p>
-              <p className="text-4xl font-bold text-gold" style={mono}>{money(repairEstimate)}</p>
-              {repairMode === 'quick' && (
-                <p className="text-xs text-muted mt-1">${quickRepairRate}/sqft x {(subject.sqft || 1500).toLocaleString()} sqft</p>
-              )}
-              {repairMode === 'ai' && aiRepairEstimate && (
-                <div className="flex items-center justify-center gap-4 mt-1 text-xs text-muted">
-                  <span>Low: <span style={mono}>{money(aiRepairEstimate.total_low)}</span></span>
-                  <span>High: <span style={mono}>{money(aiRepairEstimate.total_high)}</span></span>
-                </div>
-              )}
-            </div>
-
-            <div className="flex justify-between mt-6">
-              <button onClick={() => setStep('comps')} className="rounded-xl border border-border px-6 py-3 text-sm text-muted hover:text-foreground transition-colors">
-                &larr; Comps
-              </button>
-              <button onClick={() => setStep('verdict')} className="rounded-xl bg-accent px-8 py-3 text-sm font-semibold text-white hover:bg-accent/80 transition-colors">
-                See The Verdict &rarr;
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* ═══ STEP 5: THE VERDICT ═══ */}
-        {step === 'verdict' && maoResult && (
-          <div className="animate-verdictIn max-w-3xl mx-auto">
-            <VerdictCard
-              subject={subject}
-              finalArv={finalArv}
-              repairEstimate={repairEstimate}
-              maoResult={maoResult}
-              arvResult={arvResult}
-              adjusted={adjusted}
-              adjustmentSummary={adjustmentSummary}
-            />
-            <div className="flex items-center justify-center gap-4 mt-8">
-              <button onClick={saveToPipeline} disabled={saving} className="rounded-xl bg-accent px-8 py-3 text-sm font-semibold text-white hover:bg-accent/80 transition-colors disabled:opacity-50">
-                {saving ? 'Saving...' : 'Save to Pipeline'}
-              </button>
-              <button onClick={runAiAnalysis} disabled={aiLoading} className="rounded-xl border border-accent/50 px-6 py-3 text-sm font-medium text-accent hover:bg-accent/10 transition-colors disabled:opacity-50">
-                {aiLoading ? (
-                  <span className="flex items-center gap-2">
-                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
-                    Analyzing...
-                  </span>
-                ) : aiAnalysis ? 'Re-run AI Analysis' : 'Get AI Analysis'}
-              </button>
-              <button disabled className="rounded-xl border border-border px-6 py-3 text-sm text-muted cursor-not-allowed opacity-50">
-                Export PDF
-              </button>
-              <button onClick={() => { setSubject(defaultSubject); setRawComps([]); setOverriddenComps(new Set()); setDeselectedComps(new Set()); setArvOverride(null); setAiAnalysis(null); setAiCacheKey(null); setAiError(null); setStep('address'); }}
-                className="rounded-xl border border-border px-6 py-3 text-sm text-muted hover:text-foreground transition-colors">
-                New Analysis
-              </button>
-            </div>
-
-            {/* ═══ AI Analysis Section ═══ */}
-            {aiError && (
-              <div className="mt-6 rounded-xl border border-red-500/30 bg-red-500/5 p-4 text-center">
-                <p className="text-red-400 text-sm">{aiError}</p>
-                {aiError.includes('ANTHROPIC_API_KEY') && (
-                  <p className="text-xs text-muted mt-1">Set ANTHROPIC_API_KEY in your .env.local file</p>
-                )}
-              </div>
-            )}
-
-            {aiAnalysis && (
-              <div className="mt-6 animate-fadeIn">
-                <button
-                  onClick={() => setAiExpanded(!aiExpanded)}
-                  className="w-full flex items-center justify-between rounded-xl border border-accent/20 bg-accent/5 px-6 py-4 hover:bg-accent/10 transition-colors"
+                <h3 className="text-sm font-semibold text-accent mb-4">Seller Photos <span className="text-muted font-normal">(optional)</span></h3>
+                <div
+                  onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('border-accent'); }}
+                  onDragLeave={e => { e.currentTarget.classList.remove('border-accent'); }}
+                  onDrop={e => { e.preventDefault(); e.currentTarget.classList.remove('border-accent'); handlePhotoUpload(e.dataTransfer.files); }}
+                  onClick={() => document.getElementById('photo-input')?.click()}
+                  className="rounded-lg border-2 border-dashed border-border bg-background/30 p-4 text-center cursor-pointer hover:border-accent/50 transition-colors"
                 >
-                  <div className="flex items-center gap-3">
-                    <svg className="w-5 h-5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" />
-                    </svg>
-                    <span className="text-sm font-semibold text-accent">AI Analysis</span>
-                    <span className="text-xs text-muted">by Claude Haiku</span>
-                  </div>
-                  <svg className={`w-4 h-4 text-muted transition-transform ${aiExpanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
-
-                {aiExpanded && (
-                  <div className="mt-2 space-y-3">
-                    {aiAnalysis.points.map((point) => (
-                      <div key={point.number} className="rounded-xl border border-border bg-card p-4">
-                        <div className="flex gap-3">
-                          <span className="flex-shrink-0 w-7 h-7 rounded-full bg-accent/10 text-accent text-xs font-bold flex items-center justify-center" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
-                            {point.number}
-                          </span>
-                          <p className="text-sm text-foreground/90 whitespace-pre-wrap leading-relaxed">{point.text}</p>
-                        </div>
+                  <input id="photo-input" type="file" accept="image/jpeg,image/png,image/heic,image/heif" multiple className="hidden" onChange={e => { if (e.target.files) handlePhotoUpload(e.target.files); e.target.value = ''; }} />
+                  <p className="text-sm text-muted">Drop photos or click to browse</p>
+                  <p className="text-xs text-muted/50 mt-1">JPG, PNG, HEIC &middot; Max 10 &middot; AI analyzes visible repairs</p>
+                </div>
+                {photos.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {photos.map((p, i) => (
+                      <div key={i} className="relative group">
+                        <img src={p.dataUrl} alt={p.name} className="w-16 h-16 object-cover rounded-lg border border-border" />
+                        <button onClick={e => { e.stopPropagation(); setPhotos(prev => prev.filter((_, j) => j !== i)); }} className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-pass text-white text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">&times;</button>
+                        <select value={p.label} onChange={e => setPhotos(prev => prev.map((ph, j) => j === i ? { ...ph, label: e.target.value } : ph))} onClick={e => e.stopPropagation()} className="absolute bottom-0 left-0 right-0 bg-black/70 text-[8px] text-white border-0 py-0 px-0.5 rounded-b-lg">
+                          <option value="">Label</option>
+                          {['Kitchen', 'Bathroom', 'Exterior', 'Roof', 'Living Room', 'Bedroom', 'Basement', 'Yard'].map(l => <option key={l} value={l}>{l}</option>)}
+                        </select>
                       </div>
                     ))}
-                    <p className="text-center text-xs text-muted/50 pt-1">
-                      AI analysis: ~$0.01 per analysis &middot; {aiAnalysis.usage.input_tokens + aiAnalysis.usage.output_tokens} tokens used
-                    </p>
+                    <span className="text-[10px] text-muted self-end">{photos.length}/10</span>
                   </div>
                 )}
               </div>
-            )}
-          </div>
-        )}
+            </div>
 
-        {step === 'verdict' && !maoResult && (
-          <div className="max-w-3xl mx-auto text-center py-20">
-            <p className="text-muted text-lg mb-4">Not enough data to calculate verdict</p>
-            <p className="text-sm text-muted/60">Add comps and repair estimates first</p>
-            <button onClick={() => setStep('comps')} className="mt-4 rounded-xl bg-accent px-6 py-3 text-sm font-semibold text-white hover:bg-accent/80">
-              &larr; Back to Comps
+            {/* Seller Info */}
+            <div className="rounded-xl border border-border bg-card p-6 mb-6">
+              <h3 className="text-sm font-semibold text-accent mb-4">Seller Info <span className="text-muted font-normal">(optional — from your conversation)</span></h3>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+                <div>
+                  <label className="block text-xs text-muted mb-1">Asking Price</label>
+                  <input type="number" placeholder="$0" value={subject.asking_price ?? ''} onChange={e => setSubject(s => ({ ...s, asking_price: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" style={mono} />
+                </div>
+                <div>
+                  <label className="block text-xs text-muted mb-1">Motivation</label>
+                  <select value={subject.seller_motivation} onChange={e => setSubject(s => ({ ...s, seller_motivation: e.target.value }))} className="input-std w-full">
+                    {MOTIVATIONS.map(m => <option key={m} value={m}>{m || 'Select...'}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-muted mb-1">Timeline</label>
+                  <select value={subject.seller_timeline} onChange={e => setSubject(s => ({ ...s, seller_timeline: e.target.value }))} className="input-std w-full">
+                    {TIMELINES.map(t => <option key={t} value={t}>{t || 'Select...'}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-muted mb-1">Monthly Rent (if rented)</label>
+                  <input type="number" placeholder="$0" value={subject.monthly_rent ?? ''} onChange={e => setSubject(s => ({ ...s, monthly_rent: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" style={mono} />
+                </div>
+              </div>
+              <textarea placeholder="Notes from seller conversation..." value={subject.seller_notes} onChange={e => setSubject(s => ({ ...s, seller_notes: e.target.value }))} rows={2} className="input-std w-full resize-none" />
+            </div>
+
+            {/* Run Button */}
+            <button onClick={runAnalysis} disabled={!subject.address} className="w-full rounded-xl bg-accent py-5 text-lg font-bold text-white transition-all hover:bg-accent/80 disabled:opacity-30 disabled:cursor-not-allowed">
+              Run Full Analysis
             </button>
           </div>
         )}
 
-        {/* ═══ Add Comp Modal ═══ */}
-        {showAddComp && <AddCompModal subject={subject} onAdd={addManualComp} onClose={() => setShowAddComp(false)} />}
+        {/* ═══ STEP 2: LOADING ═══ */}
+        {step === 'loading' && (
+          <div className="animate-fadeIn max-w-xl mx-auto py-16">
+            <div className="text-center mb-10">
+              <h2 className="text-xl font-bold text-foreground mb-2">Analyzing Deal...</h2>
+              <p className="text-sm text-muted">{subject.address}</p>
+            </div>
+            <div className="space-y-4">
+              {analysisSteps.map((s, i) => (
+                <div key={i} className={`flex items-start gap-3 transition-opacity duration-300 ${s.status === 'pending' ? 'opacity-30' : 'opacity-100'}`}>
+                  <div className="w-6 h-6 flex-shrink-0 flex items-center justify-center mt-0.5">
+                    {s.status === 'done' && <span className="text-go text-lg">&#10003;</span>}
+                    {s.status === 'running' && (
+                      <svg className="animate-spin h-5 w-5 text-accent" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                    )}
+                    {s.status === 'error' && <span className="text-pass text-lg">&#10007;</span>}
+                    {s.status === 'pending' && <span className="w-2 h-2 rounded-full bg-border" />}
+                  </div>
+                  <div>
+                    <p className={`text-sm ${s.status === 'running' ? 'text-accent font-medium' : s.status === 'done' ? 'text-foreground' : 'text-muted'}`}>{s.label}</p>
+                    {s.detail && <p className="text-xs text-muted/70 mt-0.5">{s.detail}</p>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ═══ STEP 3: THE REPORT ═══ */}
+        {step === 'report' && report && (
+          <div className="animate-fadeIn">
+            {/* Report Header */}
+            <div className="rounded-xl border border-accent/20 bg-card p-6 mb-8">
+              <div className="flex items-start justify-between">
+                <div>
+                  <h1 className="text-xs font-bold tracking-widest text-accent mb-1" style={{ fontFamily: "'Cinzel', serif" }}>DealUW Analysis Report</h1>
+                  <p className="text-xl font-bold text-foreground">{report.subject.address}</p>
+                  <p className="text-sm text-muted">{report.subject.city}{report.subject.state ? `, ${report.subject.state}` : ''} {report.subject.zip}</p>
+                  <p className="text-xs text-muted mt-1">Generated: {report.generatedAt}</p>
+                </div>
+                <ConfidenceBadge level={report.confidence} />
+              </div>
+            </div>
+
+            {/* ═══ SECTION 1: Property Overview ═══ */}
+            <SectionHeader title="Property Overview" />
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+              <div className="rounded-xl border border-border bg-card p-5">
+                <div className="space-y-2 text-sm">
+                  <DataRow label="Address" value={report.subject.address} />
+                  <DataRow label="Location" value={`${report.subject.city || '—'}, ${report.subject.state || '—'} ${report.subject.zip || ''}`} />
+                  <DataRow label="Beds / Baths" value={`${report.subject.beds ?? '—'} / ${report.subject.baths ?? '—'}`} />
+                  <DataRow label="Square Feet" value={report.subject.sqft?.toLocaleString() ?? '—'} mono />
+                  <DataRow label="Lot Sqft" value={report.subject.lot_sqft?.toLocaleString() ?? '—'} mono />
+                  <DataRow label="Year Built" value={String(report.subject.year_built ?? '—')} />
+                  <DataRow label="Type" value={report.subject.property_type} />
+                  <DataRow label="Condition" value={report.subject.condition} />
+                  {report.subject.has_pool && <DataRow label="Pool" value="Yes" />}
+                  {report.subject.has_garage && <DataRow label="Garage" value={`${report.subject.garage_count} bay${report.subject.garage_count !== 1 ? 's' : ''}`} />}
+                  {report.subject.has_basement && <DataRow label="Basement" value={`${report.subject.basement_sqft} sqft (valued at 50%)`} />}
+                </div>
+              </div>
+              <div className="rounded-xl border border-border bg-card p-5">
+                {report.photos.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mb-4">
+                    {report.photos.slice(0, 4).map((p, i) => (
+                      <img key={i} src={p.dataUrl} alt={p.label || p.name} className="w-24 h-24 object-cover rounded-lg border border-border" />
+                    ))}
+                    {report.photos.length > 4 && <span className="text-xs text-muted self-end">+{report.photos.length - 4} more</span>}
+                  </div>
+                )}
+                <div className="space-y-2 text-sm">
+                  {report.subject.tax_assessed_value && <DataRow label="Tax Assessed" value={money(report.subject.tax_assessed_value)} mono />}
+                  {report.subject.last_sale_price && <DataRow label="Last Sale" value={`${money(report.subject.last_sale_price)} on ${report.subject.last_sale_date || '—'}`} mono />}
+                  <DataRow label="Asking Price" value={report.subject.asking_price ? money(report.subject.asking_price) : 'Not disclosed'} mono />
+                  {report.subject.seller_motivation && <DataRow label="Motivation" value={report.subject.seller_motivation} />}
+                  {report.subject.seller_timeline && <DataRow label="Timeline" value={report.subject.seller_timeline} />}
+                  {report.subject.monthly_rent && <DataRow label="Current Rent" value={`${money(report.subject.monthly_rent)}/mo`} mono />}
+                </div>
+              </div>
+            </div>
+
+            {/* ═══ SECTION 2: Comparable Sales ═══ */}
+            <SectionHeader title="Comparable Sales Analysis" badge={`${report.qualified.length + report.disqualified.length} found`} />
+
+            {/* Summary bar */}
+            <div className="rounded-lg border border-border bg-card/50 px-4 py-2.5 mb-4 flex items-center gap-4 text-xs text-muted flex-wrap">
+              <span><span className="text-go font-bold">{report.qualified.length}</span> qualified</span>
+              <span className="text-border">|</span>
+              <span><span className="text-pass font-bold">{report.disqualified.length}</span> disqualified</span>
+              <span className="text-border">|</span>
+              <span>Confidence: <ConfidenceBadge level={report.confidence} /></span>
+            </div>
+
+            {/* Comp cards */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              {report.adjusted.slice(0, 6).map((comp, i) => (
+                <CompCard key={i} comp={comp} subject={report.subject} />
+              ))}
+            </div>
+
+            {/* Disqualified comps */}
+            {report.disqualified.length > 0 && (
+              <div className="mb-4">
+                <button onClick={() => setShowDqComps(!showDqComps)} className="text-xs text-muted hover:text-foreground transition-colors">
+                  {showDqComps ? 'Hide' : 'Show'} {report.disqualified.length} excluded comp{report.disqualified.length !== 1 ? 's' : ''} &#9662;
+                </button>
+                {showDqComps && (
+                  <div className="mt-2 space-y-2">
+                    {report.disqualified.map((c: Record<string, unknown>, i: number) => (
+                      <div key={i} className="rounded-lg border border-pass/20 bg-pass/5 px-4 py-2 text-xs">
+                        <span className="text-foreground font-medium">{String(c.address)}</span>
+                        <span className="text-muted ml-2">{money(c.sale_price as number)}</span>
+                        <span className="text-pass ml-2">{(c.disqualified_reasons as string[])?.join('; ')}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ARV Result */}
+            {report.arvResult && (
+              <div className="rounded-xl border border-gold/30 bg-card p-6 mb-8 text-center">
+                <p className="text-xs text-muted mb-1">After Repair Value (ARV)</p>
+                <p className="text-4xl font-black text-gold mb-2" style={mono}>{money(report.arvResult.arv)}</p>
+                <p className="text-sm text-muted mb-3">{report.arvResult.method}</p>
+                <ConfidenceBadge level={report.arvResult.confidence} />
+                <p className="text-xs text-muted mt-2 max-w-lg mx-auto">{report.arvResult.confidence_reasoning}</p>
+              </div>
+            )}
+
+            {/* ═══ SECTION 3: Repair Estimate ═══ */}
+            {report.repairEstimate && (
+              <>
+                <SectionHeader title="Estimated Repairs" badge={money(report.repairEstimate.total_recommended)} />
+                {report.repairEstimate.mode === 'ai_photo' && (
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="rounded-full bg-accent/10 text-accent px-3 py-0.5 text-xs font-bold">AI Photo Analysis</span>
+                    <span className="text-xs text-muted">Condition: {report.repairEstimate.overall_condition}</span>
+                  </div>
+                )}
+                <div className="rounded-xl border border-border bg-card overflow-hidden mb-8">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-border text-xs text-muted">
+                        <th className="text-left px-4 py-2.5 font-medium">Category</th>
+                        <th className="text-left px-4 py-2.5 font-medium">Description</th>
+                        <th className="text-right px-4 py-2.5 font-medium">Low</th>
+                        <th className="text-right px-4 py-2.5 font-medium">Recommended</th>
+                        <th className="text-right px-4 py-2.5 font-medium">High</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {report.repairEstimate.line_items.map((item: RepairLineItem, i: number) => (
+                        <tr key={i} className="border-b border-border/50 hover:bg-white/[0.02]">
+                          <td className="px-4 py-2.5 capitalize font-medium flex items-center gap-2">
+                            <span className={`w-1.5 h-1.5 rounded-full ${item.urgency === 'high' ? 'bg-pass' : item.urgency === 'medium' ? 'bg-negotiate' : 'bg-go'}`} />
+                            {item.category.replace(/_/g, ' ')}
+                          </td>
+                          <td className="px-4 py-2.5 text-muted">{item.description}</td>
+                          <td className="px-4 py-2.5 text-right text-muted" style={mono}>{money(item.estimate_low)}</td>
+                          <td className="px-4 py-2.5 text-right text-gold font-semibold" style={mono}>{money(item.recommended)}</td>
+                          <td className="px-4 py-2.5 text-right text-muted" style={mono}>{money(item.estimate_high)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr className="border-t-2 border-border font-bold">
+                        <td className="px-4 py-3" colSpan={2}>TOTAL</td>
+                        <td className="px-4 py-3 text-right text-muted" style={mono}>{money(report.repairEstimate.total_low)}</td>
+                        <td className="px-4 py-3 text-right text-gold text-lg" style={mono}>{money(report.repairEstimate.total_recommended)}</td>
+                        <td className="px-4 py-3 text-right text-muted" style={mono}>{money(report.repairEstimate.total_high)}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </>
+            )}
+
+            {/* ═══ SECTION 4: Three Offers ═══ */}
+            {report.allOffers && (
+              <>
+                <SectionHeader title="Offer Strategies" />
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 mb-6">
+                  <CashOfferCard offer={report.allOffers.cash} />
+                  <OwnerFinanceCard offer={report.allOffers.owner_finance} />
+                  <NovationCard offer={report.allOffers.novation} />
+                </div>
+
+                {/* Best Strategy Banner */}
+                <div className="rounded-xl border border-gold/30 bg-gold/5 p-5 mb-8">
+                  <p className="text-sm font-bold text-gold mb-2">Recommended Strategy</p>
+                  <p className="text-sm text-foreground/90 leading-relaxed">{report.allOffers.strategy_reasoning}</p>
+                </div>
+
+                {/* Deal Comparison Table */}
+                <div className="rounded-xl border border-border bg-card overflow-hidden mb-8">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-border text-xs text-muted">
+                        <th className="text-left px-4 py-2.5 font-medium">Metric</th>
+                        <th className="text-center px-4 py-2.5 font-medium">Cash</th>
+                        <th className="text-center px-4 py-2.5 font-medium">Owner Finance</th>
+                        <th className="text-center px-4 py-2.5 font-medium">Novation</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <CompareRow label="Seller Gets" cash={money(report.allOffers.cash.mao)} of={`${money(report.allOffers.owner_finance.total_seller_receives)} (over ${report.allOffers.owner_finance.term_years}yr)`} nov={money(report.allOffers.novation.seller_price)} />
+                      <CompareRow label="Your Profit" cash={`${money(report.allOffers.cash.assignment_fee.conservative)}-${money(report.allOffers.cash.assignment_fee.aggressive)}`} of={`${money(report.allOffers.owner_finance.assignment_fee)} + ${money(report.allOffers.owner_finance.monthly_cashflow)}/mo`} nov={money(report.allOffers.novation.wholesaler_profit)} />
+                      <CompareRow label="Time to Close" cash="7-14 days" of="30 days" nov={report.allOffers.novation.estimated_timeline} />
+                      <CompareRow label="Works?" cash={report.allOffers.cash.works ? 'Yes' : 'No'} of={report.allOffers.owner_finance.works ? 'Yes' : 'No'} nov={report.allOffers.novation.works ? 'Yes' : 'No'} />
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+
+            {/* ═══ SECTION 5: Negotiation Guide ═══ */}
+            {report.negotiationGuide && (
+              <>
+                <button onClick={() => setShowNegGuide(!showNegGuide)} className="w-full rounded-xl border border-accent/20 bg-accent/5 px-6 py-4 flex items-center justify-between hover:bg-accent/10 transition-colors mb-2">
+                  <span className="text-sm font-semibold text-accent">Negotiation Guide</span>
+                  <span className={`text-muted transition-transform ${showNegGuide ? 'rotate-180' : ''}`}>&#9662;</span>
+                </button>
+                {showNegGuide && (
+                  <div className="rounded-xl border border-border bg-card p-6 mb-8 space-y-5 animate-fadeIn">
+                    <NegSection title="Opening" text={report.negotiationGuide.opening} />
+                    <NegSection title="If Rejected" text={report.negotiationGuide.if_rejected} />
+                    <NegSection title="If Still Rejected" text={report.negotiationGuide.if_still_rejected} />
+                    <NegSection title="Walk Away" text={report.negotiationGuide.walk_away} />
+                    <div>
+                      <p className="text-xs font-bold text-muted mb-2 tracking-wider">KEY POINTS</p>
+                      <ul className="space-y-1.5">
+                        {report.negotiationGuide.key_points.map((pt, i) => (
+                          <li key={i} className="text-xs text-muted/80 flex items-start gap-2">
+                            <span className="text-accent mt-0.5">&#8226;</span>
+                            <span>{pt}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* ═══ AI Second Opinion ═══ */}
+            {aiAnalysis && (
+              <div className="mb-8 space-y-3">
+                <h3 className="text-sm font-semibold text-accent">AI Second Opinion</h3>
+                {aiAnalysis.points.map(pt => (
+                  <div key={pt.number} className="rounded-lg border border-border bg-card p-4 flex gap-3">
+                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-accent/10 text-accent text-xs font-bold flex items-center justify-center" style={mono}>{pt.number}</span>
+                    <p className="text-sm text-foreground/90 whitespace-pre-wrap leading-relaxed">{pt.text}</p>
+                  </div>
+                ))}
+                <p className="text-xs text-muted/40 text-center">AI analysis: ~$0.01 &middot; {aiAnalysis.usage.input_tokens + aiAnalysis.usage.output_tokens} tokens</p>
+              </div>
+            )}
+
+            {/* ═══ Action Buttons ═══ */}
+            <div className="flex items-center justify-center gap-4 flex-wrap py-4">
+              <button onClick={saveToPipeline} disabled={saving} className="rounded-xl bg-accent px-8 py-3 text-sm font-semibold text-white hover:bg-accent/80 transition-colors disabled:opacity-50">
+                {saving ? 'Saving...' : 'Save to Pipeline'}
+              </button>
+              <button disabled className="rounded-xl border border-border px-6 py-3 text-sm text-muted cursor-not-allowed opacity-50">
+                Export PDF
+              </button>
+              <button disabled className="rounded-xl border border-border px-6 py-3 text-sm text-muted cursor-not-allowed opacity-50">
+                Share Report
+              </button>
+              <button onClick={runAiOpinion} disabled={aiLoading || !report.arvResult} className="rounded-xl border border-accent/50 px-6 py-3 text-sm font-medium text-accent hover:bg-accent/10 transition-colors disabled:opacity-50">
+                {aiLoading ? 'Analyzing...' : aiAnalysis ? 'Re-run AI Opinion' : 'Get AI Second Opinion'}
+              </button>
+              <button onClick={() => { setSubject(defaultSubject); setPhotos([]); setReport(null); setAiAnalysis(null); setStep('input'); }} className="rounded-xl border border-border px-6 py-3 text-sm text-muted hover:text-foreground transition-colors">
+                New Analysis
+              </button>
+            </div>
+          </div>
+        )}
       </main>
 
       <style jsx global>{`
@@ -1312,12 +781,6 @@ export default function AnalyzePage() {
           to { opacity: 1; transform: translateY(0); }
         }
         .animate-fadeIn { animation: fadeIn 0.3s ease-out; }
-
-        @keyframes verdictIn {
-          from { opacity: 0; transform: translateY(20px) scale(0.98); }
-          to { opacity: 1; transform: translateY(0) scale(1); }
-        }
-        .animate-verdictIn { animation: verdictIn 0.5s ease-out; }
       `}</style>
     </div>
   );
@@ -1327,365 +790,153 @@ export default function AnalyzePage() {
 // SUB-COMPONENTS
 // ═════════════════════════════════════════════════════════════════════════════
 
-function StepIndicator({ current, onStep, hasAddress, hasComps }: {
-  current: Step; onStep: (s: Step) => void; hasAddress: boolean; hasComps: boolean;
-}) {
-  const steps: { key: Step; label: string; num: number }[] = [
-    { key: 'address', label: 'Address', num: 1 },
-    { key: 'details', label: 'Details', num: 2 },
-    { key: 'comps', label: 'Comps', num: 3 },
-    { key: 'repairs', label: 'Repairs', num: 4 },
-    { key: 'verdict', label: 'Verdict', num: 5 },
-  ];
-  const currentIdx = steps.findIndex(s => s.key === current);
-
+function SectionHeader({ title, badge }: { title: string; badge?: string }) {
   return (
-    <div className="flex items-center justify-center gap-1 mb-8">
-      {steps.map((s, i) => {
-        const isActive = s.key === current;
-        const isPast = i < currentIdx;
-        const canClick = s.key === 'address' || (s.key === 'details' && hasAddress) || (s.key === 'comps' && hasAddress) || (s.key === 'repairs' && hasAddress) || (s.key === 'verdict' && hasAddress && hasComps);
-        return (
-          <div key={s.key} className="flex items-center">
-            <button
-              onClick={() => canClick && onStep(s.key)}
-              disabled={!canClick}
-              className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium transition-all ${
-                isActive ? 'bg-accent/15 text-accent' : isPast ? 'text-accent/60 hover:text-accent' : 'text-muted/40'
-              } ${canClick ? 'cursor-pointer' : 'cursor-not-allowed'}`}
-            >
-              <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${
-                isActive ? 'bg-accent text-white' : isPast ? 'bg-accent/20 text-accent' : 'bg-border text-muted/40'
-              }`}>{s.num}</span>
-              <span className="hidden sm:inline">{s.label}</span>
-            </button>
-            {i < steps.length - 1 && <div className={`w-8 h-px mx-1 ${i < currentIdx ? 'bg-accent/30' : 'bg-border'}`} />}
-          </div>
-        );
-      })}
+    <div className="flex items-center gap-3 mb-4 mt-2">
+      <h2 className="text-lg font-bold text-foreground">{title}</h2>
+      {badge && <span className="rounded-full bg-accent/10 px-3 py-0.5 text-xs font-bold text-accent">{badge}</span>}
     </div>
   );
 }
 
-function LabelInput({ label, type = 'text', step, value, onChange }: {
-  label: string; type?: string; step?: string; value: string | number | null | undefined; onChange: (v: string) => void;
-}) {
+function DataRow({ label, value, mono: useMono }: { label: string; value: string; mono?: boolean }) {
   return (
-    <div>
-      <label className="block text-xs text-muted mb-1">{label}</label>
-      <input
-        type={type}
-        step={step}
-        value={value ?? ''}
-        onChange={e => onChange(e.target.value)}
-        className="input-std w-full"
-      />
+    <div className="flex items-center justify-between py-1 border-b border-border/30 last:border-0">
+      <span className="text-muted text-xs">{label}</span>
+      <span className={`text-foreground text-sm ${useMono ? 'font-semibold' : ''}`} style={useMono ? { fontFamily: "'JetBrains Mono', monospace" } : undefined}>{value}</span>
     </div>
-  );
-}
-
-function Toggle({ label, value, onChange }: { label: string; value: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <button
-      onClick={() => onChange(!value)}
-      className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm transition-colors ${
-        value ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted hover:border-accent/30'
-      }`}
-    >
-      <span className={`w-4 h-4 rounded-sm border flex items-center justify-center text-[10px] ${
-        value ? 'bg-accent border-accent text-white' : 'border-muted/40'
-      }`}>{value ? '&#10003;' : ''}</span>
-      {label}
-    </button>
-  );
-}
-
-function FilterBadge({ label }: { label: string }) {
-  return (
-    <span className="flex items-center gap-1 whitespace-nowrap">
-      <span className="text-go">&#10003;</span> {label}
-    </span>
   );
 }
 
 function ConfidenceBadge({ level }: { level: string }) {
-  const colors = { high: 'bg-go/10 text-go border-go/30', medium: 'bg-negotiate/10 text-negotiate border-negotiate/30', low: 'bg-pass/10 text-pass border-pass/30' };
-  return (
-    <span className={`rounded-full border px-3 py-0.5 text-xs font-bold uppercase ${colors[level as keyof typeof colors] || colors.low}`}>
-      {level}
-    </span>
-  );
+  const colors: Record<string, string> = { high: 'bg-go/10 text-go border-go/30', medium: 'bg-negotiate/10 text-negotiate border-negotiate/30', low: 'bg-pass/10 text-pass border-pass/30' };
+  return <span className={`rounded-full border px-3 py-0.5 text-xs font-bold uppercase ${colors[level] || colors.low}`}>{level}</span>;
 }
 
-function QuickRepairCard({ label, range, desc, color, active, onClick }: {
-  label: string; range: string; desc: string; color: string; active: boolean; onClick: () => void;
-}) {
-  const colorMap: Record<string, string> = {
-    go: active ? 'border-go bg-go/10' : 'border-border hover:border-go/30',
-    negotiate: active ? 'border-negotiate bg-negotiate/10' : 'border-border hover:border-negotiate/30',
-    pass: active ? 'border-pass bg-pass/10' : 'border-border hover:border-pass/30',
-  };
-  const textMap: Record<string, string> = { go: 'text-go', negotiate: 'text-negotiate', pass: 'text-pass' };
-
+function CompCard({ comp, subject }: { comp: AdjustedComp; subject: Subject }) {
+  const hasFlagWarnings = comp.warnings && comp.warnings.length > 0;
   return (
-    <button onClick={onClick} className={`rounded-xl border p-5 text-left transition-all ${colorMap[color]}`}>
-      <p className={`text-sm font-bold mb-1 ${active ? textMap[color] : 'text-foreground'}`}>{label}</p>
-      <p className={`text-lg font-bold mb-2 ${textMap[color]}`} style={mono}>{range}</p>
-      <p className="text-xs text-muted">{desc}</p>
-    </button>
-  );
-}
-
-function RepairSlider({ item, bathCount, onChange }: { item: RepairItem; bathCount: number; onChange: (i: RepairItem) => void }) {
-  const mult = item.key === 'bathrooms' ? bathCount : 1;
-  const total = item.value * mult;
-  return (
-    <div className={`rounded-lg border px-4 py-3 transition-colors ${item.enabled ? 'border-border bg-card' : 'border-border/50 bg-transparent'}`}>
-      <div className="flex items-center justify-between mb-1">
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={item.enabled} onChange={e => onChange({ ...item, enabled: e.target.checked, value: e.target.checked ? item.value || Math.round(item.max * 0.4) : 0 })} className="accent-accent" />
-          <span className={item.enabled ? 'text-foreground' : 'text-muted'}>{item.label}</span>
-          {item.key === 'bathrooms' && mult > 1 && <span className="text-[10px] text-muted">(x{mult})</span>}
-        </label>
-        <span className="text-sm text-gold" style={mono}>{money(total)}</span>
+    <div className={`rounded-xl border bg-card p-4 ${hasFlagWarnings ? 'border-negotiate/30' : 'border-border'}`}>
+      <div className="flex items-start justify-between mb-2">
+        <p className="text-sm font-semibold text-foreground">{comp.address}</p>
+        {comp.same_subdivision && <span className="text-[10px] bg-go/10 text-go rounded-full px-2 py-0.5">Same subdivision</span>}
       </div>
-      {item.enabled && (
-        <input type="range" min="0" max={item.max} step="500" value={item.value} onChange={e => onChange({ ...item, value: Number(e.target.value) })} className="w-full accent-accent" />
+      <div className="flex items-baseline gap-2 mb-2">
+        <span className="text-muted text-xs">Sold:</span>
+        <span className="text-sm" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(comp.sale_price)}</span>
+        <span className="text-muted text-xs">&rarr;</span>
+        <span className="text-sm font-bold" style={{ fontFamily: "'JetBrains Mono', monospace", color: comp.total_adjustment >= 0 ? '#22C55E' : '#EF4444' }}>
+          {money(comp.adjusted_price)}
+        </span>
+      </div>
+      <p className="text-xs text-muted mb-2">
+        {comp.beds}bd/{comp.baths}ba &middot; {comp.sqft?.toLocaleString()} sqft &middot; {comp.distance_miles?.toFixed(1)} mi &middot; {comp.days_old}d ago
+      </p>
+      {comp.adjustments.filter((a: Adjustment) => a.amount !== 0).length > 0 && (
+        <div className="border-t border-border/50 pt-2 mt-1 space-y-0.5">
+          {comp.adjustments.filter((a: Adjustment) => a.amount !== 0).map((adj: Adjustment, i: number) => (
+            <p key={i} className="text-[11px] text-muted">
+              <span className="capitalize">{adj.type.replace(/_/g, ' ')}</span>: <span className={adj.amount >= 0 ? 'text-go' : 'text-pass'} style={{ fontFamily: "'JetBrains Mono', monospace" }}>{adj.amount >= 0 ? '+' : ''}{money(adj.amount)}</span>
+            </p>
+          ))}
+          <p className="text-[11px] font-semibold text-muted">
+            Net: <span className={comp.total_adjustment >= 0 ? 'text-go' : 'text-pass'} style={{ fontFamily: "'JetBrains Mono', monospace" }}>{comp.total_adjustment >= 0 ? '+' : ''}{money(comp.total_adjustment)}</span>
+          </p>
+        </div>
       )}
     </div>
   );
 }
 
-// ─── Verdict Card ───────────────────────────────────────────────────────────
-
-function VerdictCard({ subject, finalArv, repairEstimate, maoResult, arvResult, adjusted, adjustmentSummary }: {
-  subject: Subject;
-  finalArv: number;
-  repairEstimate: number;
-  maoResult: ReturnType<typeof calculateMAO>;
-  arvResult: ReturnType<typeof calculateARV> | null;
-  adjusted: AdjustedComp[];
-  adjustmentSummary: Record<string, { count: number; net: number }>;
-}) {
-  const rec = maoResult.recommendation;
-  const glowMap: Record<string, string> = {
-    go: 'shadow-[0_0_40px_rgba(34,197,94,0.15)] border-go/30',
-    negotiate: 'shadow-[0_0_40px_rgba(245,158,11,0.15)] border-negotiate/30',
-    pass: 'shadow-[0_0_40px_rgba(239,68,68,0.15)] border-pass/30',
-  };
-  const recColors: Record<string, string> = { go: 'text-go', negotiate: 'text-negotiate', pass: 'text-pass' };
-  const recBg: Record<string, string> = { go: 'bg-go/10', negotiate: 'bg-negotiate/10', pass: 'bg-pass/10' };
-
-  // Dynamic recommendation text
-  let recText = '';
-  if (rec === 'go') {
-    recText = `Strong deal at ${money(maoResult.mao)}. ${money(maoResult.spread ?? 0)} spread with ${arvResult?.confidence ?? 'unknown'} confidence. Move fast.`;
-  } else if (rec === 'negotiate') {
-    const gap = subject.asking_price && maoResult.mao ? subject.asking_price - maoResult.mao : 0;
-    recText = gap > 0
-      ? `Offer ${money(maoResult.mao)}. Seller needs to come down ${money(gap)} for this deal to work. ARV confidence is ${arvResult?.confidence ?? 'unknown'} — verify with a drive-by before offering.`
-      : `Numbers are tight with ${money(maoResult.spread ?? 0)} spread. Negotiate hard — there may be a deal here if you can lock it up at ${money(maoResult.mao)} or below.`;
-  } else {
-    const spread = maoResult.spread ?? 0;
-    recText = `Numbers don't work. Negative spread of ${money(spread)}. Seller would need to come down to ${money(maoResult.mao)} for this to make sense. Move on.`;
-  }
-
+function CashOfferCard({ offer }: { offer: CashOffer }) {
   return (
-    <div className={`rounded-2xl border bg-card p-8 ${glowMap[rec] || glowMap.pass}`}>
-      {/* Header */}
-      <div className="text-center mb-6">
-        <h2 className="text-xs font-bold tracking-widest text-accent mb-1" style={{ fontFamily: "'Cinzel', serif" }}>DealUW</h2>
-        <p className="text-sm font-bold text-foreground tracking-wide uppercase">Underwriting Summary</p>
-      </div>
-
-      {/* Property */}
-      <div className="text-center mb-6 text-sm text-muted">
-        <p className="text-foreground font-medium">{subject.address}{subject.city ? `, ${subject.city}` : ''}{subject.state ? `, ${subject.state}` : ''}</p>
-        <p>{subject.beds || '?'}bd/{subject.baths || '?'}ba | {subject.sqft?.toLocaleString() || '?'} sqft | {subject.property_type} | Built {subject.year_built || '?'}</p>
-      </div>
-
-      <div className="w-full h-px bg-border mb-6" />
-
-      {/* The Numbers */}
-      <p className="text-center text-xs tracking-widest text-muted mb-4">THE NUMBERS</p>
-
-      <div className="space-y-3 max-w-md mx-auto mb-6">
-        <NumberRow label="ARV (Adjusted)" value={money(finalArv)} />
-        <NumberRow label="x 70% Rule" value={money(Math.round(finalArv * 0.70))} />
-        <NumberRow label="- Repairs" value={money(repairEstimate)} negative />
+    <div className={`rounded-xl border p-5 ${offer.works ? 'border-go/30 bg-go/[0.03]' : 'border-border bg-card'}`}>
+      <p className="text-xs text-muted mb-1">CASH OFFER</p>
+      <p className="text-sm text-muted mb-3">Fast close. Lowest price. Highest certainty.</p>
+      <p className="text-xs text-muted mb-0.5">Maximum Offer (MAO)</p>
+      <p className="text-3xl font-black text-gold mb-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.mao)}</p>
+      <div className="space-y-2 text-xs">
+        <div className="flex justify-between"><span className="text-muted">Start at:</span><span className="text-foreground font-semibold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.suggested_starting_offer)}</span></div>
+        <div className="flex justify-between"><span className="text-muted">Walk away above:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.walk_away_price)}</span></div>
         <div className="h-px bg-border" />
-        <NumberRow label="MAO" value={money(maoResult.mao)} highlight />
-        <div className="h-px bg-border/50" />
-        {subject.asking_price && (
-          <>
-            <NumberRow label="Asking Price" value={money(subject.asking_price)} />
-            <NumberRow
-              label="Spread"
-              value={money(maoResult.spread ?? 0)}
-              negative={(maoResult.spread ?? 0) < 0}
-              positive={(maoResult.spread ?? 0) > 0}
-            />
-          </>
-        )}
+        <div className="flex justify-between"><span className="text-muted">Your Profit:</span><span className="text-go font-semibold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.assignment_fee.conservative)}-{money(offer.assignment_fee.aggressive)}</span></div>
+        <div className="flex justify-between"><span className="text-muted">Buyer Profit:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.buyer_profit_at_mao)}</span></div>
+        <div className="flex justify-between"><span className="text-muted">Buyer ROI:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{offer.buyer_roi}%</span></div>
       </div>
-
-      {/* Adjustments Applied */}
-      {Object.keys(adjustmentSummary).length > 0 && (
-        <>
-          <div className="w-full h-px bg-border mb-4" />
-          <p className="text-center text-xs tracking-widest text-muted mb-3">ADJUSTMENTS APPLIED</p>
-          <div className="space-y-1.5 max-w-md mx-auto mb-6">
-            {Object.entries(adjustmentSummary).map(([type, data]) => (
-              <p key={type} className="text-xs text-muted">
-                <span className="capitalize">{type.replace(/_/g, ' ')}</span>: {data.count} comp{data.count !== 1 ? 's' : ''}, net{' '}
-                <span className={data.net >= 0 ? 'text-go' : 'text-pass'} style={mono}>{data.net >= 0 ? '+' : ''}{money(data.net)}</span>
-              </p>
-            ))}
-          </div>
-        </>
-      )}
-
-      {/* Confidence */}
-      {arvResult && (
-        <>
-          <div className="w-full h-px bg-border mb-4" />
-          <p className="text-center text-xs tracking-widest text-muted mb-3">CONFIDENCE</p>
-          <div className="text-center mb-6">
-            <ConfidenceBadge level={arvResult.confidence} />
-            <p className="text-xs text-muted mt-2">{arvResult.confidence_reasoning}</p>
-          </div>
-        </>
-      )}
-
-      {/* Recommendation */}
-      <div className="w-full h-px bg-border mb-4" />
-      <p className="text-center text-xs tracking-widest text-muted mb-4">RECOMMENDATION</p>
-      <div className={`rounded-xl ${recBg[rec]} p-6 text-center`}>
-        <p className={`text-3xl font-black uppercase tracking-wider mb-3 ${recColors[rec]}`}>{rec}</p>
-        <p className="text-sm text-muted leading-relaxed max-w-lg mx-auto">{recText}</p>
+      <div className={`mt-3 rounded-lg px-3 py-2 text-xs font-medium ${offer.works ? 'bg-go/10 text-go' : 'bg-pass/10 text-pass'}`}>
+        {offer.works ? 'Deal works at MAO' : 'Numbers don\'t work'}
       </div>
     </div>
   );
 }
 
-function NumberRow({ label, value, highlight, negative, positive }: {
-  label: string; value: string; highlight?: boolean; negative?: boolean; positive?: boolean;
-}) {
-  let valueColor = 'text-foreground';
-  if (highlight) valueColor = 'text-gold';
-  if (negative) valueColor = 'text-pass';
-  if (positive) valueColor = 'text-go';
-
+function OwnerFinanceCard({ offer }: { offer: OwnerFinanceOffer }) {
   return (
-    <div className="flex items-center justify-between">
-      <span className="text-sm text-muted">{label}</span>
-      <span className={`text-lg font-bold ${valueColor} ${highlight ? 'text-2xl' : ''}`} style={mono}>{value}</span>
+    <div className={`rounded-xl border p-5 ${offer.works ? 'border-accent/30 bg-accent/[0.03]' : 'border-border bg-card'}`}>
+      <p className="text-xs text-muted mb-1">OWNER FINANCE</p>
+      <p className="text-sm text-muted mb-3">Higher price for seller. Monthly income stream.</p>
+      <p className="text-xs text-muted mb-0.5">Purchase Price</p>
+      <p className="text-3xl font-black text-gold mb-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.purchase_price)}</p>
+      <div className="space-y-2 text-xs">
+        <div className="flex justify-between"><span className="text-muted">Down:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.down_payment)} ({(offer.down_payment_pct * 100).toFixed(0)}%)</span></div>
+        <div className="flex justify-between"><span className="text-muted">Terms:</span><span className="text-foreground">{(offer.interest_rate * 100).toFixed(0)}% / {offer.term_years}yr</span></div>
+        <div className="flex justify-between"><span className="text-muted">Monthly:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.monthly_payment)}</span></div>
+        <div className="h-px bg-border" />
+        <div className="flex justify-between"><span className="text-muted">Start at:</span><span className="text-foreground font-semibold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.suggested_starting_offer.price)} / {(offer.suggested_starting_offer.interest_rate * 100).toFixed(0)}%</span></div>
+        <div className="h-px bg-border" />
+        <div className="flex justify-between"><span className="text-muted">Cash Flow:</span><span className={`font-semibold ${offer.monthly_cashflow >= 0 ? 'text-go' : 'text-pass'}`} style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.market_rent)} - {money(offer.monthly_payment)} = {money(offer.monthly_cashflow)}/mo</span></div>
+        <div className="flex justify-between"><span className="text-muted">Your Fee:</span><span className="text-go font-semibold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.assignment_fee)}</span></div>
+        <div className="flex justify-between"><span className="text-muted">Seller Total:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.total_seller_receives)}</span></div>
+      </div>
+      <div className={`mt-3 rounded-lg px-3 py-2 text-xs font-medium ${offer.works ? 'bg-accent/10 text-accent' : 'bg-pass/10 text-pass'}`}>
+        {offer.works ? 'Works if seller wants monthly income' : 'Negative cash flow'}
+      </div>
     </div>
   );
 }
 
-// ─── Add Comp Modal ─────────────────────────────────────────────────────────
-
-function AddCompModal({ subject, onAdd, onClose }: { subject: Subject; onAdd: (c: Comp) => void; onClose: () => void }) {
-  const [comp, setComp] = useState<Partial<Comp>>({
-    address: '', sale_price: undefined, sale_date: '', sqft: undefined, lot_sqft: undefined,
-    beds: undefined, baths: undefined, year_built: undefined, property_type: subject.property_type,
-    distance_miles: undefined, same_subdivision: true, crosses_major_road: false,
-    has_pool: false, has_garage: false, garage_count: 0, has_carport: false,
-    has_basement: false, basement_sqft: 0, has_guest_house: false, guest_house_sqft: 0,
-  });
-
-  const handleSubmit = () => {
-    if (!comp.address || !comp.sale_price || !comp.sale_date) return;
-    const daysOld = Math.floor((Date.now() - new Date(comp.sale_date).getTime()) / (1000 * 60 * 60 * 24));
-    onAdd({
-      address: comp.address,
-      sale_price: Number(comp.sale_price),
-      sale_date: comp.sale_date,
-      days_old: daysOld,
-      sqft: Number(comp.sqft) || 0,
-      lot_sqft: Number(comp.lot_sqft) || 0,
-      beds: Number(comp.beds) || 0,
-      baths: Number(comp.baths) || 0,
-      year_built: Number(comp.year_built) || 0,
-      property_type: comp.property_type || '',
-      distance_miles: Number(comp.distance_miles) || 0,
-      same_subdivision: comp.same_subdivision ?? true,
-      crosses_major_road: comp.crosses_major_road ?? false,
-      has_pool: comp.has_pool ?? false,
-      has_garage: comp.has_garage ?? false,
-      garage_count: Number(comp.garage_count) || 0,
-      has_carport: comp.has_carport ?? false,
-      has_basement: comp.has_basement ?? false,
-      basement_sqft: Number(comp.basement_sqft) || 0,
-      has_guest_house: comp.has_guest_house ?? false,
-      guest_house_sqft: Number(comp.guest_house_sqft) || 0,
-    });
-  };
-
+function NovationCard({ offer }: { offer: NovationOffer }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 animate-fadeIn" onClick={onClose}>
-      <div className="rounded-2xl border border-border bg-card p-6 w-full max-w-lg max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-bold text-foreground">Add Comparable Sale</h3>
-          <button onClick={onClose} className="text-muted hover:text-foreground text-lg">&times;</button>
-        </div>
-        <div className="space-y-3">
-          <input placeholder="Address *" value={comp.address} onChange={e => setComp(c => ({ ...c, address: e.target.value }))} className="input-std w-full" />
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs text-muted mb-1">Sale Price *</label>
-              <input type="number" value={comp.sale_price ?? ''} onChange={e => setComp(c => ({ ...c, sale_price: Number(e.target.value) || undefined }))} className="input-std w-full" />
-            </div>
-            <div>
-              <label className="block text-xs text-muted mb-1">Sale Date *</label>
-              <input type="date" value={comp.sale_date} onChange={e => setComp(c => ({ ...c, sale_date: e.target.value }))} className="input-std w-full" />
-            </div>
-          </div>
-          <div className="grid grid-cols-4 gap-3">
-            <div><label className="block text-xs text-muted mb-1">Sqft</label><input type="number" value={comp.sqft ?? ''} onChange={e => setComp(c => ({ ...c, sqft: Number(e.target.value) || undefined }))} className="input-std w-full" /></div>
-            <div><label className="block text-xs text-muted mb-1">Lot Sqft</label><input type="number" value={comp.lot_sqft ?? ''} onChange={e => setComp(c => ({ ...c, lot_sqft: Number(e.target.value) || undefined }))} className="input-std w-full" /></div>
-            <div><label className="block text-xs text-muted mb-1">Beds</label><input type="number" value={comp.beds ?? ''} onChange={e => setComp(c => ({ ...c, beds: Number(e.target.value) || undefined }))} className="input-std w-full" /></div>
-            <div><label className="block text-xs text-muted mb-1">Baths</label><input type="number" step="0.5" value={comp.baths ?? ''} onChange={e => setComp(c => ({ ...c, baths: Number(e.target.value) || undefined }))} className="input-std w-full" /></div>
-          </div>
-          <div className="grid grid-cols-3 gap-3">
-            <div><label className="block text-xs text-muted mb-1">Year Built</label><input type="number" value={comp.year_built ?? ''} onChange={e => setComp(c => ({ ...c, year_built: Number(e.target.value) || undefined }))} className="input-std w-full" /></div>
-            <div>
-              <label className="block text-xs text-muted mb-1">Type</label>
-              <select value={comp.property_type} onChange={e => setComp(c => ({ ...c, property_type: e.target.value }))} className="input-std w-full">
-                {PROPERTY_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-              </select>
-            </div>
-            <div><label className="block text-xs text-muted mb-1">Distance (mi)</label><input type="number" step="0.1" value={comp.distance_miles ?? ''} onChange={e => setComp(c => ({ ...c, distance_miles: Number(e.target.value) || undefined }))} className="input-std w-full" /></div>
-          </div>
-          <div className="flex items-center gap-4">
-            <label className="flex items-center gap-2 text-sm text-muted">
-              <input type="checkbox" checked={comp.same_subdivision} onChange={e => setComp(c => ({ ...c, same_subdivision: e.target.checked }))} className="accent-accent" /> Same subdivision
-            </label>
-            <label className="flex items-center gap-2 text-sm text-muted">
-              <input type="checkbox" checked={comp.crosses_major_road} onChange={e => setComp(c => ({ ...c, crosses_major_road: e.target.checked }))} className="accent-accent" /> Crosses major road
-            </label>
-          </div>
-          <div className="flex items-center gap-4">
-            <label className="flex items-center gap-2 text-sm text-muted">
-              <input type="checkbox" checked={comp.has_pool} onChange={e => setComp(c => ({ ...c, has_pool: e.target.checked }))} className="accent-accent" /> Pool
-            </label>
-            <label className="flex items-center gap-2 text-sm text-muted">
-              <input type="checkbox" checked={comp.has_garage} onChange={e => setComp(c => ({ ...c, has_garage: e.target.checked }))} className="accent-accent" /> Garage
-            </label>
-            <label className="flex items-center gap-2 text-sm text-muted">
-              <input type="checkbox" checked={comp.has_carport} onChange={e => setComp(c => ({ ...c, has_carport: e.target.checked }))} className="accent-accent" /> Carport
-            </label>
-          </div>
-        </div>
-        <div className="flex justify-end gap-3 mt-6">
-          <button onClick={onClose} className="rounded-lg border border-border px-4 py-2 text-sm text-muted hover:text-foreground transition-colors">Cancel</button>
-          <button onClick={handleSubmit} disabled={!comp.address || !comp.sale_price || !comp.sale_date}
-            className="rounded-lg bg-accent px-5 py-2 text-sm font-semibold text-white hover:bg-accent/80 transition-colors disabled:opacity-30">
-            Add Comp
-          </button>
-        </div>
+    <div className={`rounded-xl border p-5 ${offer.works ? 'border-negotiate/30 bg-negotiate/[0.03]' : 'border-border bg-card'}`}>
+      <p className="text-xs text-muted mb-1">NOVATION</p>
+      <p className="text-sm text-muted mb-3">Highest payout for seller. You coordinate the rehab.</p>
+      <p className="text-xs text-muted mb-0.5">Seller Net Price</p>
+      <p className="text-3xl font-black text-gold mb-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.seller_price)}</p>
+      <div className="space-y-2 text-xs">
+        <div className="flex justify-between"><span className="text-muted">Renovate for:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.renovation_cost)}</span></div>
+        <div className="flex justify-between"><span className="text-muted">List at:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.listing_price)}</span></div>
+        <div className="h-px bg-border" />
+        <div className="flex justify-between"><span className="text-muted">Commission:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.agent_commission)}</span></div>
+        <div className="flex justify-between"><span className="text-muted">Closing:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.closing_costs)}</span></div>
+        <div className="flex justify-between"><span className="text-muted">Holding:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.holding_costs)} ({offer.estimated_holding_months}mo)</span></div>
+        <div className="h-px bg-border" />
+        <div className="flex justify-between"><span className="text-muted">Start at:</span><span className="text-foreground font-semibold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.suggested_starting_offer.seller_price)}</span></div>
+        <div className="flex justify-between"><span className="text-muted">Your Profit:</span><span className="text-go font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.wholesaler_profit)}</span></div>
+        <div className="flex justify-between"><span className="text-muted">Timeline:</span><span className="text-foreground">~{offer.estimated_timeline}</span></div>
       </div>
+      <div className={`mt-3 rounded-lg px-3 py-2 text-xs font-medium ${offer.works ? 'bg-negotiate/10 text-negotiate' : 'bg-pass/10 text-pass'}`}>
+        {offer.works ? 'Best if seller wants maximum price' : 'Insufficient margin'}
+      </div>
+    </div>
+  );
+}
+
+function CompareRow({ label, cash, of, nov }: { label: string; cash: string; of: string; nov: string }) {
+  return (
+    <tr className="border-b border-border/50">
+      <td className="px-4 py-2.5 text-muted font-medium">{label}</td>
+      <td className="px-4 py-2.5 text-center text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{cash}</td>
+      <td className="px-4 py-2.5 text-center text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{of}</td>
+      <td className="px-4 py-2.5 text-center text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{nov}</td>
+    </tr>
+  );
+}
+
+function NegSection({ title, text }: { title: string; text: string }) {
+  return (
+    <div>
+      <p className="text-xs font-bold text-accent mb-1 tracking-wider uppercase">{title}</p>
+      <p className="text-sm text-foreground/80 leading-relaxed italic bg-background/50 rounded-lg p-3 border border-border/50">{text}</p>
     </div>
   );
 }
