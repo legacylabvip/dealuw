@@ -97,3 +97,69 @@ export function calculateMAO(
   purchasePrice?: number | null,
   confidence?: string
 ): MAOResult;
+
+export interface CompReportSelectedComp {
+  address: string;
+  sale_price: number;
+  adjusted_price: number;
+  sale_date: string;
+  days_old: number;
+  sqft: number;
+  beds: number;
+  baths: number;
+  distance: number;
+  same_subdivision: boolean;
+  adjustments: Adjustment[];
+  total_adjustment: number;
+  status: 'qualified' | 'flagged';
+  notes: string[];
+}
+
+export interface CompReportDisqualifiedComp {
+  address: string;
+  sale_price: number;
+  sale_date: string;
+  days_old: number;
+  sqft: number;
+  beds: number;
+  baths: number;
+  distance: number;
+  reasons: string[];
+}
+
+export interface CompReport {
+  subject: {
+    address: string;
+    city: string;
+    state: string;
+    zip: string;
+    beds: number | null;
+    baths: number | null;
+    sqft: number | null;
+    lot_sqft: number | null;
+    year_built: number | null;
+    property_type: string;
+  };
+  comps_searched: number;
+  comps_qualified: number;
+  comps_disqualified: number;
+  comps_flagged: number;
+  selected_comps: CompReportSelectedComp[];
+  disqualified_comps: CompReportDisqualifiedComp[];
+  arv: {
+    raw: number;
+    adjusted: number;
+    confidence: string;
+    confidence_reasoning: string;
+    method: string;
+    search_expansions: string[];
+  } | null;
+}
+
+export function generateCompReport(
+  subject: any,
+  filteredComps: any[],
+  adjustedComps: AdjustedComp[],
+  arvResult: ARVResult | null,
+  searchExpansions?: string[]
+): CompReport;

@@ -473,3 +473,71 @@ export function calculateMAO(arv, repairEstimate, askingPrice = null, purchasePr
     breakdown,
   };
 }
+
+// =============================================================================
+// STEP 5 — GENERATE COMP REPORT
+// =============================================================================
+
+export function generateCompReport(subject, filteredComps, adjustedComps, arvResult, searchExpansions = []) {
+  const qualified = filteredComps.filter(c => !c.disqualified);
+  const disqualified = filteredComps.filter(c => c.disqualified);
+  const flagged = qualified.filter(c => c.warnings && c.warnings.length > 0);
+
+  const selectedComps = adjustedComps.map(c => ({
+    address: c.address,
+    sale_price: c.sale_price,
+    adjusted_price: c.adjusted_price,
+    sale_date: c.sale_date,
+    days_old: c.days_old,
+    sqft: c.sqft,
+    beds: c.beds,
+    baths: c.baths,
+    distance: c.distance_miles,
+    same_subdivision: c.same_subdivision,
+    adjustments: c.adjustments || [],
+    total_adjustment: c.total_adjustment || 0,
+    status: c.warnings && c.warnings.length > 0 ? 'flagged' : 'qualified',
+    notes: c.warnings || [],
+  }));
+
+  const disqualifiedComps = disqualified.map(c => ({
+    address: c.address,
+    sale_price: c.sale_price,
+    sale_date: c.sale_date,
+    days_old: c.days_old,
+    sqft: c.sqft,
+    beds: c.beds,
+    baths: c.baths,
+    distance: c.distance_miles,
+    reasons: c.disqualified_reasons || [],
+  }));
+
+  return {
+    subject: {
+      address: subject.address,
+      city: subject.city,
+      state: subject.state,
+      zip: subject.zip,
+      beds: subject.beds,
+      baths: subject.baths,
+      sqft: subject.sqft,
+      lot_sqft: subject.lot_sqft,
+      year_built: subject.year_built,
+      property_type: subject.property_type,
+    },
+    comps_searched: qualified.length + disqualified.length,
+    comps_qualified: qualified.length,
+    comps_disqualified: disqualified.length,
+    comps_flagged: flagged.length,
+    selected_comps: selectedComps,
+    disqualified_comps: disqualifiedComps,
+    arv: arvResult ? {
+      raw: arvResult.arv,
+      adjusted: arvResult.arv, // Same unless traffic/basement applied (already in ARV calc)
+      confidence: arvResult.confidence,
+      confidence_reasoning: arvResult.confidence_reasoning,
+      method: arvResult.method,
+      search_expansions: searchExpansions,
+    } : null,
+  };
+}

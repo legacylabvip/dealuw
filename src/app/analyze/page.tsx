@@ -144,6 +144,18 @@ export default function AnalyzePage() {
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiExpanded, setAiExpanded] = useState(true);
   const [aiCacheKey, setAiCacheKey] = useState<string | null>(null);
+  const [autoPullLoading, setAutoPullLoading] = useState(false);
+  const [autoPullError, setAutoPullError] = useState<string | null>(null);
+  const [autoPullAvailable, setAutoPullAvailable] = useState<boolean | null>(null);
+  const [compPullExpansions, setCompPullExpansions] = useState<string[]>([]);
+
+  // Check if auto-pull is available
+  useEffect(() => {
+    fetch('/api/property-lookup')
+      .then(r => r.json())
+      .then(d => setAutoPullAvailable(d.available))
+      .catch(() => setAutoPullAvailable(false));
+  }, []);
 
   // Load recent addresses
   useEffect(() => {
@@ -159,6 +171,79 @@ export default function AnalyzePage() {
     setRecentAddresses(updated);
     try { localStorage.setItem('dealuw_recent_addresses', JSON.stringify(updated)); } catch { /* ignore */ }
   }, [recentAddresses]);
+
+  // ─── Auto-pull property data & comps ────────────────────────────
+
+  const handlePullData = async () => {
+    if (!subject.address) return;
+    saveRecentAddress(subject.address);
+
+    if (!autoPullAvailable) {
+      setStep('details');
+      return;
+    }
+
+    setAutoPullLoading(true);
+    setAutoPullError(null);
+    setCompPullExpansions([]);
+
+    try {
+      // Step 1: Lookup property
+      const lookupRes = await fetch('/api/property-lookup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: subject.address, city: subject.city, state: subject.state, zip: subject.zip }),
+      });
+      const lookupData = await lookupRes.json();
+
+      if (lookupData.available && lookupData.property) {
+        const p = lookupData.property;
+        setSubject(s => ({
+          ...s,
+          address: p.address || s.address,
+          city: p.city || s.city,
+          state: p.state || s.state,
+          zip: p.zip || s.zip,
+          beds: p.beds ?? s.beds,
+          baths: p.baths ?? s.baths,
+          sqft: p.sqft ?? s.sqft,
+          lot_sqft: p.lot_sqft ?? s.lot_sqft,
+          year_built: p.year_built ?? s.year_built,
+          property_type: p.property_type || s.property_type,
+          has_pool: p.has_pool ?? s.has_pool,
+          has_garage: p.has_garage ?? s.has_garage,
+          garage_count: p.garage_count ?? s.garage_count,
+          has_carport: p.has_carport ?? s.has_carport,
+          has_basement: p.has_basement ?? s.has_basement,
+          basement_sqft: p.basement_sqft ?? s.basement_sqft,
+          has_guest_house: p.has_guest_house ?? s.has_guest_house,
+          guest_house_sqft: p.guest_house_sqft ?? s.guest_house_sqft,
+        }));
+
+        // Step 2: Pull comps with the property data
+        const compsRes = await fetch('/api/pull-comps', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ property: p }),
+        });
+        const compsData = await compsRes.json();
+
+        if (compsData.available && compsData.comps?.length > 0) {
+          setRawComps(compsData.comps);
+          if (compsData.expansions?.length > 0) {
+            setCompPullExpansions(compsData.expansions);
+          }
+        }
+      } else {
+        setAutoPullError(lookupData.error || 'Property not found. Enter details manually.');
+      }
+    } catch {
+      setAutoPullError('Auto-pull failed. Enter details manually.');
+    } finally {
+      setAutoPullLoading(false);
+      setStep('details');
+    }
+  };
 
   // ─── Engine calculations (reactive) ──────────────────────────────
 
@@ -373,12 +458,23 @@ export default function AnalyzePage() {
               </div>
 
               <button
-                onClick={() => { if (subject.address) { saveRecentAddress(subject.address); setStep('details'); } }}
-                disabled={!subject.address}
+                onClick={handlePullData}
+                disabled={!subject.address || autoPullLoading}
                 className="w-full rounded-xl bg-accent py-4 text-base font-semibold text-white transition-all hover:bg-accent/80 disabled:opacity-30 disabled:cursor-not-allowed"
               >
-                Pull Data & Analyze
+                {autoPullLoading ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                    Pulling property data &amp; comps...
+                  </span>
+                ) : autoPullAvailable ? 'Pull Data & Analyze' : 'Enter Details Manually'}
               </button>
+              {autoPullAvailable === false && (
+                <p className="text-xs text-muted/60 text-center mt-2">No RE data API configured. You can enter property details and comps manually.</p>
+              )}
+              {autoPullError && (
+                <p className="text-xs text-amber-400 text-center mt-2">{autoPullError}</p>
+              )}
 
               {recentAddresses.length > 0 && (
                 <div className="mt-5">
@@ -403,6 +499,19 @@ export default function AnalyzePage() {
         {/* ═══ STEP 2: PROPERTY DETAILS ═══ */}
         {step === 'details' && (
           <div className="animate-fadeIn">
+            {autoPullAvailable && rawComps.length > 0 && (
+              <div className="mb-4 rounded-xl border border-green-500/20 bg-green-500/5 px-4 py-3 flex items-center gap-2">
+                <span className="text-green-400 text-sm">&#10003;</span>
+                <p className="text-sm text-green-300">
+                  Auto-pulled property data and {rawComps.length} comp{rawComps.length !== 1 ? 's' : ''}. Verify details below.
+                </p>
+              </div>
+            )}
+            {autoPullError && (
+              <div className="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3">
+                <p className="text-sm text-amber-300">{autoPullError}</p>
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-6">
               {/* Left: Basic Info */}
               <div className="rounded-xl border border-border bg-card p-6">
@@ -504,6 +613,17 @@ export default function AnalyzePage() {
                 + Add Comp Manually
               </button>
             </div>
+
+            {/* Search Expansion Warnings */}
+            {compPullExpansions.length > 0 && (
+              <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-2.5 mb-4">
+                {compPullExpansions.map((exp, i) => (
+                  <p key={i} className="text-xs text-amber-300 flex items-center gap-1.5">
+                    <span>&#9888;</span> {exp}
+                  </p>
+                ))}
+              </div>
+            )}
 
             {/* Filter Status Bar */}
             <div className="rounded-lg border border-border bg-card/50 px-4 py-2.5 mb-4 flex items-center gap-4 text-xs text-muted overflow-x-auto">
