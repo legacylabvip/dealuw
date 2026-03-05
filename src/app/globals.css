@@ -1,26 +1,43 @@
 @import "tailwindcss";
 
+@font-face {
+  font-family: 'Cinzel';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('https://fonts.gstatic.com/s/cinzel/v23/8vIU7ww63mVu7gtR-kwKxNvkNOjw-tbnfY3lCQ.woff2') format('woff2');
+}
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #070B14;
+  --foreground: #E2E8F0;
+  --card: #0C1220;
+  --border: #1A2332;
+  --accent: #3AADE8;
+  --gold: #D4AF37;
+  --go: #22C55E;
+  --negotiate: #F59E0B;
+  --pass: #EF4444;
+  --muted: #64748B;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --color-card: var(--card);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-gold: var(--gold);
+  --color-go: var(--go);
+  --color-negotiate: var(--negotiate);
+  --color-pass: var(--pass);
+  --color-muted: var(--muted);
+  --font-sans: 'DM Sans', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: 'DM Sans', sans-serif;
 }
