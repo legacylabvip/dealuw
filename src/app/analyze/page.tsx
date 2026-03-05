@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Navbar from '@/components/Navbar';
 import { COMP_RULES, ADJUSTMENTS } from '@/lib/compRules';
 import { filterComps, adjustComps, calculateARV, calculateMAO, type AdjustedComp } from '@/lib/compEngine';
+import type { AIAnalysisResult } from '@/lib/aiAnalysis';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -138,6 +139,11 @@ export default function AnalyzePage() {
   const [saving, setSaving] = useState(false);
   const [recentAddresses, setRecentAddresses] = useState<string[]>([]);
   const [showCompAdjBreakdown, setShowCompAdjBreakdown] = useState(false);
+  const [aiAnalysis, setAiAnalysis] = useState<AIAnalysisResult | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiExpanded, setAiExpanded] = useState(true);
+  const [aiCacheKey, setAiCacheKey] = useState<string | null>(null);
 
   // Load recent addresses
   useEffect(() => {
@@ -243,6 +249,61 @@ export default function AnalyzePage() {
       router.push(`/analyze/${deal.id}`);
     } catch {
       setSaving(false);
+    }
+  };
+
+  // ─── AI Analysis ────────────────────────────────────────────────
+
+  const runAiAnalysis = async () => {
+    if (!arvResult || !maoResult) return;
+
+    // Build cache key from inputs that matter
+    const cacheData = JSON.stringify({
+      subject, arv: arvResult.arv, mao: maoResult.mao, repair: repairEstimate,
+      comps: adjusted.map(c => c.address).sort(),
+    });
+    if (cacheData === aiCacheKey && aiAnalysis) return; // Already cached
+
+    setAiLoading(true);
+    setAiError(null);
+    try {
+      const repairBreakdown = repairMode === 'quick'
+        ? `${quickRepairRate}/sqft quick estimate`
+        : repairItems.filter(i => i.enabled).map(i => `${i.label}: $${i.value.toLocaleString()}`).join(', ') + (otherRepairAmount > 0 ? `, Other: $${otherRepairAmount.toLocaleString()}` : '');
+
+      const res = await fetch('/api/ai-analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subject,
+          compsUsed: adjusted.map(c => ({
+            address: c.address, sale_price: c.sale_price, adjusted_price: c.adjusted_price,
+            days_old: c.days_old, sqft: c.sqft, distance_miles: c.distance_miles,
+            adjustments: c.adjustments,
+          })),
+          compsDisqualified: filtered.filter(c => c._status === 'disqualified' && !c.selected).map(c => ({
+            address: c.address, sale_price: c.sale_price, disqualified_reasons: c.disqualified_reasons,
+          })),
+          arvResult,
+          maoResult,
+          repairEstimate,
+          repairBreakdown,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'AI analysis failed');
+      }
+
+      const result: AIAnalysisResult = await res.json();
+      setAiAnalysis(result);
+      setAiCacheKey(cacheData);
+      setAiExpanded(true);
+    } catch (err: unknown) {
+      setAiError(err instanceof Error ? err.message : 'AI analysis failed');
+    } finally {
+      setAiLoading(false);
     }
   };
 
@@ -798,17 +859,70 @@ export default function AnalyzePage() {
               <button onClick={saveToPipeline} disabled={saving} className="rounded-xl bg-accent px-8 py-3 text-sm font-semibold text-white hover:bg-accent/80 transition-colors disabled:opacity-50">
                 {saving ? 'Saving...' : 'Save to Pipeline'}
               </button>
-              <button disabled className="rounded-xl border border-border px-6 py-3 text-sm text-muted cursor-not-allowed opacity-50">
-                Get AI Analysis
+              <button onClick={runAiAnalysis} disabled={aiLoading} className="rounded-xl border border-accent/50 px-6 py-3 text-sm font-medium text-accent hover:bg-accent/10 transition-colors disabled:opacity-50">
+                {aiLoading ? (
+                  <span className="flex items-center gap-2">
+                    <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                    Analyzing...
+                  </span>
+                ) : aiAnalysis ? 'Re-run AI Analysis' : 'Get AI Analysis'}
               </button>
               <button disabled className="rounded-xl border border-border px-6 py-3 text-sm text-muted cursor-not-allowed opacity-50">
                 Export PDF
               </button>
-              <button onClick={() => { setSubject(defaultSubject); setRawComps([]); setOverriddenComps(new Set()); setDeselectedComps(new Set()); setArvOverride(null); setStep('address'); }}
+              <button onClick={() => { setSubject(defaultSubject); setRawComps([]); setOverriddenComps(new Set()); setDeselectedComps(new Set()); setArvOverride(null); setAiAnalysis(null); setAiCacheKey(null); setAiError(null); setStep('address'); }}
                 className="rounded-xl border border-border px-6 py-3 text-sm text-muted hover:text-foreground transition-colors">
                 New Analysis
               </button>
             </div>
+
+            {/* ═══ AI Analysis Section ═══ */}
+            {aiError && (
+              <div className="mt-6 rounded-xl border border-red-500/30 bg-red-500/5 p-4 text-center">
+                <p className="text-red-400 text-sm">{aiError}</p>
+                {aiError.includes('ANTHROPIC_API_KEY') && (
+                  <p className="text-xs text-muted mt-1">Set ANTHROPIC_API_KEY in your .env.local file</p>
+                )}
+              </div>
+            )}
+
+            {aiAnalysis && (
+              <div className="mt-6 animate-fadeIn">
+                <button
+                  onClick={() => setAiExpanded(!aiExpanded)}
+                  className="w-full flex items-center justify-between rounded-xl border border-accent/20 bg-accent/5 px-6 py-4 hover:bg-accent/10 transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <svg className="w-5 h-5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" />
+                    </svg>
+                    <span className="text-sm font-semibold text-accent">AI Analysis</span>
+                    <span className="text-xs text-muted">by Claude Haiku</span>
+                  </div>
+                  <svg className={`w-4 h-4 text-muted transition-transform ${aiExpanded ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+
+                {aiExpanded && (
+                  <div className="mt-2 space-y-3">
+                    {aiAnalysis.points.map((point) => (
+                      <div key={point.number} className="rounded-xl border border-border bg-card p-4">
+                        <div className="flex gap-3">
+                          <span className="flex-shrink-0 w-7 h-7 rounded-full bg-accent/10 text-accent text-xs font-bold flex items-center justify-center" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+                            {point.number}
+                          </span>
+                          <p className="text-sm text-foreground/90 whitespace-pre-wrap leading-relaxed">{point.text}</p>
+                        </div>
+                      </div>
+                    ))}
+                    <p className="text-center text-xs text-muted/50 pt-1">
+                      AI analysis: ~$0.01 per analysis &middot; {aiAnalysis.usage.input_tokens + aiAnalysis.usage.output_tokens} tokens used
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
