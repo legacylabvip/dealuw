@@ -115,7 +115,11 @@ export default function AnalyzePage() {
   const [aiAnalysis, setAiAnalysis] = useState<AIAnalysisResult | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [dataSource, setDataSource] = useState<'zoria' | 'manual' | null>(null);
+  const [loadingTooLong, setLoadingTooLong] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tooLongRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ─── Export PDF ─────────────────────────────────────────────────
 
@@ -171,15 +175,46 @@ export default function AnalyzePage() {
     setAnalysisSteps(prev => prev.map((s, i) => i === idx ? { ...s, ...update } : s));
   };
 
+  // Helper: fetch with abort controller and timeout
+  const zoriaFetch = async (url: string, body: unknown, signal?: AbortSignal) => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 90000);
+    const mergedSignal = signal || controller.signal;
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: mergedSignal,
+      });
+      clearTimeout(timeout);
+      return res;
+    } catch (err) {
+      clearTimeout(timeout);
+      throw err;
+    }
+  };
+
   const runAnalysis = async () => {
     if (!subject.address) return;
     setStep('loading');
     setReport(null);
     setAiAnalysis(null);
+    setDataSource(null);
+    setLoadingTooLong(false);
+
+    // Cancel any previous request
+    if (abortRef.current) abortRef.current.abort();
+    const abort = new AbortController();
+    abortRef.current = abort;
+
+    // Show "taking longer" after 20s
+    if (tooLongRef.current) clearTimeout(tooLongRef.current);
+    tooLongRef.current = setTimeout(() => setLoadingTooLong(true), 20000);
 
     const steps: AnalysisStep[] = [
-      { label: 'Looking up property details...', status: 'pending' },
-      { label: 'Pulling comparable sales...', status: 'pending' },
+      { label: 'Asking Zoria to research property...', status: 'pending' },
+      { label: 'Searching for comparable sales...', status: 'pending' },
       { label: 'Filtering comps (7 appraisal rules)...', status: 'pending' },
       { label: 'Applying adjustments...', status: 'pending' },
       { label: 'Calculating ARV...', status: 'pending' },
@@ -191,17 +226,15 @@ export default function AnalyzePage() {
 
     let currentSubject = { ...subject };
     let rawComps: Record<string, unknown>[] = [];
-    let propertyForComps: Record<string, unknown> = currentSubject;
+    let source: 'zoria' | 'manual' = 'manual';
 
     try {
-      // Step 0: Property lookup
+      // Step 0: Property lookup via Zoria
       updateStep(0, { status: 'running' });
       try {
-        const lookupRes = await fetch('/api/property-lookup', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ address: subject.address, city: subject.city, state: subject.state, zip: subject.zip }),
-        });
+        const lookupRes = await zoriaFetch('/api/lookup/property', {
+          address: subject.address, city: subject.city, state: subject.state, zip: subject.zip,
+        }, abort.signal);
         const lookupData = await lookupRes.json();
         if (lookupData.available && lookupData.property) {
           const p = lookupData.property;
@@ -230,34 +263,41 @@ export default function AnalyzePage() {
             last_sale_date: p.last_sale_date ?? null,
             subdivision: p.subdivision ?? null,
           };
-          propertyForComps = p;
           setSubject(currentSubject);
+          source = 'zoria';
           updateStep(0, { status: 'done', detail: `${currentSubject.beds}bd/${currentSubject.baths}ba, ${currentSubject.sqft?.toLocaleString()} sqft` });
         } else {
-          updateStep(0, { status: 'done', detail: 'Manual entry — no API data' });
+          updateStep(0, { status: 'done', detail: 'Auto-lookup unavailable — using manual data' });
         }
-      } catch {
-        updateStep(0, { status: 'done', detail: 'No API — using manual data' });
+      } catch (err) {
+        if (abort.signal.aborted) throw err;
+        updateStep(0, { status: 'done', detail: 'Zoria unavailable — using manual data' });
       }
 
-      // Step 1: Pull comps
+      // Step 1: Pull comps via Zoria
       updateStep(1, { status: 'running' });
       try {
-        const compsRes = await fetch('/api/pull-comps', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ property: propertyForComps }),
-        });
+        const compsRes = await zoriaFetch('/api/lookup/comps', {
+          address: currentSubject.address,
+          city: currentSubject.city,
+          state: currentSubject.state,
+          zip: currentSubject.zip,
+          subject_details: currentSubject,
+        }, abort.signal);
         const compsData = await compsRes.json();
         if (compsData.available && compsData.comps?.length > 0) {
           rawComps = compsData.comps;
-          updateStep(1, { status: 'done', detail: `${rawComps.length} comps found` });
+          source = 'zoria';
+          updateStep(1, { status: 'done', detail: `${rawComps.length} comps found via Zoria` });
         } else {
-          updateStep(1, { status: 'done', detail: 'No comps from API' });
+          updateStep(1, { status: 'done', detail: 'No comps found — add manually' });
         }
-      } catch {
-        updateStep(1, { status: 'done', detail: 'No API — add comps manually' });
+      } catch (err) {
+        if (abort.signal.aborted) throw err;
+        updateStep(1, { status: 'done', detail: 'Comp search failed — add manually' });
       }
+
+      setDataSource(source);
 
       // Step 2: Filter comps
       updateStep(2, { status: 'running' });
@@ -277,27 +317,70 @@ export default function AnalyzePage() {
       const arvResult = adjusted.length > 0 ? calculateARV(currentSubject, adjusted) : null;
       updateStep(4, { status: 'done', detail: arvResult ? `${money(arvResult.arv)} (${arvResult.confidence} confidence)` : 'No comps for ARV' });
 
-      // Step 5: Repair estimate
+      // Step 5: Repair estimate — photos go through Zoria, otherwise algorithmic
       updateStep(5, { status: 'running' });
       let repairEstimate: RepairEstimate | null = null;
-      try {
-        const repairRes = await fetch('/api/estimate-repairs', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+      if (photos.length > 0) {
+        // Try Zoria photo analysis first
+        try {
+          const repairRes = await zoriaFetch('/api/lookup/repairs', {
+            photos: photos.map(p => ({ base64: p.dataUrl, label: p.label })),
             property: currentSubject,
-            photos: photos.length > 0 ? photos.map(p => p.dataUrl) : undefined,
-            mode: photos.length > 0 ? 'ai_photo' : 'algorithmic',
-          }),
-        });
-        if (repairRes.ok) {
-          repairEstimate = await repairRes.json();
-          updateStep(5, { status: 'done', detail: `${money(repairEstimate?.total_recommended)} (${repairEstimate?.mode === 'ai_photo' ? 'AI photo' : 'algorithmic'})` });
-        } else {
-          updateStep(5, { status: 'done', detail: 'Estimate unavailable' });
+          }, abort.signal);
+          if (repairRes.ok) {
+            repairEstimate = await repairRes.json();
+            updateStep(5, { status: 'done', detail: `${money(repairEstimate?.total_recommended)} (Zoria AI photo)` });
+          } else {
+            throw new Error('Zoria photo analysis failed');
+          }
+        } catch (err) {
+          if (abort.signal.aborted) throw err;
+          // Fallback: try direct Anthropic API
+          try {
+            const fallbackRes = await zoriaFetch('/api/estimate-repairs', {
+              property: currentSubject,
+              photos: photos.map(p => p.dataUrl),
+              mode: 'ai_photo',
+            }, abort.signal);
+            if (fallbackRes.ok) {
+              repairEstimate = await fallbackRes.json();
+              updateStep(5, { status: 'done', detail: `${money(repairEstimate?.total_recommended)} (AI photo fallback)` });
+            } else {
+              throw new Error('Photo fallback failed');
+            }
+          } catch (err2) {
+            if (abort.signal.aborted) throw err2;
+            // Final fallback: algorithmic
+            try {
+              const algoRes = await zoriaFetch('/api/estimate-repairs', {
+                property: currentSubject,
+                mode: 'algorithmic',
+              }, abort.signal);
+              if (algoRes.ok) {
+                repairEstimate = await algoRes.json();
+                updateStep(5, { status: 'done', detail: `${money(repairEstimate?.total_recommended)} (algorithmic fallback)` });
+              }
+            } catch { /* ignore */ }
+            if (!repairEstimate) updateStep(5, { status: 'done', detail: 'Estimate unavailable' });
+          }
         }
-      } catch {
-        updateStep(5, { status: 'done', detail: 'Estimate failed' });
+      } else {
+        // No photos — algorithmic estimate
+        try {
+          const repairRes = await zoriaFetch('/api/estimate-repairs', {
+            property: currentSubject,
+            mode: 'algorithmic',
+          }, abort.signal);
+          if (repairRes.ok) {
+            repairEstimate = await repairRes.json();
+            updateStep(5, { status: 'done', detail: `${money(repairEstimate?.total_recommended)} (algorithmic)` });
+          } else {
+            updateStep(5, { status: 'done', detail: 'Estimate unavailable' });
+          }
+        } catch (err) {
+          if (abort.signal.aborted) throw err;
+          updateStep(5, { status: 'done', detail: 'Estimate failed' });
+        }
       }
 
       // Step 6: Offer strategies
@@ -307,7 +390,6 @@ export default function AnalyzePage() {
       const arv = arvResult?.arv ?? 0;
       const repairs = repairEstimate?.total_recommended ?? 0;
       if (arv > 0) {
-        // Import dynamically to avoid SSR issues with the JS module
         const { calculateAllOffers, generateNegotiationGuide } = await import('@/lib/offerCalculator');
         allOffers = calculateAllOffers({
           arv,
@@ -342,12 +424,76 @@ export default function AnalyzePage() {
       setReport(fullReport);
       updateStep(7, { status: 'done', detail: 'Complete' });
 
+      // Clear timers
+      if (tooLongRef.current) clearTimeout(tooLongRef.current);
+      setLoadingTooLong(false);
+
       // Transition to report
       setTimeout(() => setStep('report'), 600);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Analysis failed';
-      setAnalysisSteps(prev => prev.map(s => s.status === 'running' ? { ...s, status: 'error', detail: msg } : s));
+      if (tooLongRef.current) clearTimeout(tooLongRef.current);
+      if (abort.signal.aborted) {
+        setAnalysisSteps(prev => prev.map(s => s.status === 'running' ? { ...s, status: 'error', detail: 'Cancelled' } : s));
+      } else {
+        const msg = err instanceof Error ? err.message : 'Analysis failed';
+        setAnalysisSteps(prev => prev.map(s => s.status === 'running' ? { ...s, status: 'error', detail: msg } : s));
+      }
     }
+  };
+
+  // ─── Re-pull from Zoria ─────────────────────────────────────────
+
+  const repullProperty = async () => {
+    if (!report) return;
+    setDataSource(null);
+    try {
+      const res = await fetch('/api/lookup/property', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: report.subject.address, city: report.subject.city, state: report.subject.state, zip: report.subject.zip }),
+      });
+      const data = await res.json();
+      if (data.available && data.property) {
+        const p = data.property;
+        const updated = { ...report.subject, ...p };
+        setSubject(updated);
+        setReport({ ...report, subject: updated });
+        setDataSource('zoria');
+      }
+    } catch { /* ignore */ }
+  };
+
+  const repullComps = async () => {
+    if (!report) return;
+    try {
+      const res = await fetch('/api/lookup/comps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          address: report.subject.address,
+          city: report.subject.city,
+          state: report.subject.state,
+          zip: report.subject.zip,
+          subject_details: report.subject,
+        }),
+      });
+      const data = await res.json();
+      if (data.available && data.comps?.length > 0) {
+        const newFiltered = filterComps(report.subject, data.comps);
+        const newAdjusted = adjustComps(report.subject, newFiltered.qualified);
+        const newArv = newAdjusted.length > 0 ? calculateARV(report.subject, newAdjusted) : null;
+        setReport({
+          ...report,
+          rawComps: data.comps,
+          qualified: newFiltered.qualified,
+          disqualified: newFiltered.disqualified,
+          adjusted: newAdjusted,
+          arvResult: newArv,
+          confidence: newArv?.confidence ?? 'low',
+        });
+        setDataSource('zoria');
+      }
+    } catch { /* ignore */ }
   };
 
   // ─── Save to Pipeline ─────────────────────────────────────────
@@ -520,6 +666,7 @@ export default function AnalyzePage() {
             <div className="text-center mb-10">
               <h2 className="text-xl font-bold text-foreground mb-2">Analyzing Deal...</h2>
               <p className="text-sm text-muted">{subject.address}</p>
+              <p className="text-xs text-muted/50 mt-2">Zoria is searching the web for data. This may take 15-30 seconds.</p>
             </div>
             <div className="space-y-4">
               {analysisSteps.map((s, i) => (
@@ -539,6 +686,17 @@ export default function AnalyzePage() {
                 </div>
               ))}
             </div>
+            {loadingTooLong && (
+              <div className="mt-8 text-center animate-fadeIn">
+                <p className="text-xs text-negotiate mb-3">Taking longer than expected...</p>
+                <button
+                  onClick={() => { if (abortRef.current) abortRef.current.abort(); setStep('input'); setLoadingTooLong(false); }}
+                  className="rounded-lg border border-border px-4 py-2 text-xs text-muted hover:text-foreground transition-colors"
+                >
+                  Switch to manual entry
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -553,13 +711,25 @@ export default function AnalyzePage() {
                   <p className="text-xl font-bold text-foreground">{report.subject.address}</p>
                   <p className="text-sm text-muted">{report.subject.city}{report.subject.state ? `, ${report.subject.state}` : ''} {report.subject.zip}</p>
                   <p className="text-xs text-muted mt-1">Generated: {report.generatedAt}</p>
+                  {dataSource && (
+                    <p className="text-xs mt-2">
+                      <span className={`rounded-full px-2 py-0.5 ${dataSource === 'zoria' ? 'bg-accent/10 text-accent' : 'bg-border text-muted'}`}>
+                        {dataSource === 'zoria' ? 'Data: Zoria (AI-powered)' : 'Data: Manual entry'}
+                      </span>
+                    </p>
+                  )}
                 </div>
                 <ConfidenceBadge level={report.confidence} />
               </div>
             </div>
 
             {/* ═══ SECTION 1: Property Overview ═══ */}
-            <SectionHeader title="Property Overview" />
+            <div className="flex items-center justify-between mb-4 mt-2">
+              <SectionHeader title="Property Overview" />
+              <button onClick={repullProperty} className="text-[11px] text-accent/60 hover:text-accent transition-colors flex items-center gap-1">
+                <span>&#8635;</span> Re-pull from Zoria
+              </button>
+            </div>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
               <div className="rounded-xl border border-border bg-card p-5">
                 <div className="space-y-2 text-sm">
@@ -597,7 +767,12 @@ export default function AnalyzePage() {
             </div>
 
             {/* ═══ SECTION 2: Comparable Sales ═══ */}
-            <SectionHeader title="Comparable Sales Analysis" badge={`${report.qualified.length + report.disqualified.length} found`} />
+            <div className="flex items-center justify-between mb-4 mt-2">
+              <SectionHeader title="Comparable Sales Analysis" badge={`${report.qualified.length + report.disqualified.length} found`} />
+              <button onClick={repullComps} className="text-[11px] text-accent/60 hover:text-accent transition-colors flex items-center gap-1">
+                <span>&#8635;</span> Re-pull from Zoria
+              </button>
+            </div>
 
             {/* Summary bar */}
             <div className="rounded-lg border border-border bg-card/50 px-4 py-2.5 mb-4 flex items-center gap-4 text-xs text-muted flex-wrap">
