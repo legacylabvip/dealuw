@@ -6,6 +6,7 @@ import Navbar from '@/components/Navbar';
 import { COMP_RULES, ADJUSTMENTS } from '@/lib/compRules';
 import { filterComps, adjustComps, calculateARV, calculateMAO, type AdjustedComp } from '@/lib/compEngine';
 import type { AIAnalysisResult } from '@/lib/aiAnalysis';
+import type { RepairEstimate, RepairLineItem } from '@/lib/repairEstimator';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -77,6 +78,14 @@ interface RepairItem {
   multiplier?: number;
 }
 
+interface UploadedPhoto {
+  dataUrl: string;
+  name: string;
+  label: string;
+}
+
+type RepairModeType = 'ai' | 'quick' | 'detailed';
+
 type Step = 'address' | 'details' | 'comps' | 'repairs' | 'verdict';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -128,7 +137,7 @@ export default function AnalyzePage() {
   const [rawComps, setRawComps] = useState<Comp[]>([]);
   const [overriddenComps, setOverriddenComps] = useState<Set<number>>(new Set());
   const [deselectedComps, setDeselectedComps] = useState<Set<number>>(new Set());
-  const [repairMode, setRepairMode] = useState<'quick' | 'detailed'>('quick');
+  const [repairMode, setRepairMode] = useState<RepairModeType>('quick');
   const [quickRepairRate, setQuickRepairRate] = useState<number>(20);
   const [repairItems, setRepairItems] = useState<RepairItem[]>(defaultRepairItems);
   const [otherRepairLabel, setOtherRepairLabel] = useState('');
@@ -148,6 +157,11 @@ export default function AnalyzePage() {
   const [autoPullError, setAutoPullError] = useState<string | null>(null);
   const [autoPullAvailable, setAutoPullAvailable] = useState<boolean | null>(null);
   const [compPullExpansions, setCompPullExpansions] = useState<string[]>([]);
+  const [uploadedPhotos, setUploadedPhotos] = useState<UploadedPhoto[]>([]);
+  const [aiRepairEstimate, setAiRepairEstimate] = useState<RepairEstimate | null>(null);
+  const [aiRepairLoading, setAiRepairLoading] = useState(false);
+  const [aiRepairError, setAiRepairError] = useState<string | null>(null);
+  const [aiRepairOverrides, setAiRepairOverrides] = useState<Record<string, number>>({});
 
   // Check if auto-pull is available
   useEffect(() => {
@@ -245,6 +259,85 @@ export default function AnalyzePage() {
     }
   };
 
+  // ─── Photo upload & AI repair estimate ─────────────────────────
+
+  const handlePhotoUpload = useCallback((files: FileList | File[]) => {
+    const maxPhotos = 10;
+    const remaining = maxPhotos - uploadedPhotos.length;
+    const toProcess = Array.from(files).slice(0, remaining);
+
+    toProcess.forEach(file => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const dataUrl = e.target?.result as string;
+        if (dataUrl) {
+          setUploadedPhotos(prev => {
+            if (prev.length >= maxPhotos) return prev;
+            return [...prev, { dataUrl, name: file.name, label: '' }];
+          });
+        }
+      };
+      reader.readAsDataURL(file);
+    });
+  }, [uploadedPhotos.length]);
+
+  const removePhoto = useCallback((index: number) => {
+    setUploadedPhotos(prev => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const runAiRepairEstimate = async () => {
+    if (uploadedPhotos.length === 0) return;
+    setAiRepairLoading(true);
+    setAiRepairError(null);
+    try {
+      const res = await fetch('/api/estimate-repairs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          property: subject,
+          photos: uploadedPhotos.map(p => p.dataUrl),
+          mode: 'ai_photo',
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'AI repair estimate failed');
+      }
+      const result: RepairEstimate = await res.json();
+      setAiRepairEstimate(result);
+      setAiRepairOverrides({});
+      setRepairMode('ai');
+    } catch (err: unknown) {
+      setAiRepairError(err instanceof Error ? err.message : 'AI repair estimate failed');
+    } finally {
+      setAiRepairLoading(false);
+    }
+  };
+
+  const runAlgorithmicEstimate = async () => {
+    setAiRepairLoading(true);
+    setAiRepairError(null);
+    try {
+      const res = await fetch('/api/estimate-repairs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ property: subject, mode: 'algorithmic' }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Algorithmic estimate failed');
+      }
+      const result: RepairEstimate = await res.json();
+      setAiRepairEstimate(result);
+      setAiRepairOverrides({});
+      setRepairMode('ai');
+    } catch (err: unknown) {
+      setAiRepairError(err instanceof Error ? err.message : 'Estimate failed');
+    } finally {
+      setAiRepairLoading(false);
+    }
+  };
+
   // ─── Engine calculations (reactive) ──────────────────────────────
 
   const { filtered, adjusted, arvResult, repairEstimate, maoResult } = useMemo(() => {
@@ -280,7 +373,13 @@ export default function AnalyzePage() {
 
     // Repair estimate
     let repairEstimate = 0;
-    if (repairMode === 'quick') {
+    if (repairMode === 'ai' && aiRepairEstimate) {
+      // AI mode: use recommended values with any overrides applied
+      repairEstimate = aiRepairEstimate.line_items.reduce((sum, item) => {
+        const override = aiRepairOverrides[item.category];
+        return sum + (override != null ? override : item.recommended);
+      }, 0);
+    } else if (repairMode === 'quick') {
       repairEstimate = quickRepairRate * (subject.sqft || 1500);
     } else {
       repairEstimate = repairItems.reduce((sum, item) => {
@@ -296,7 +395,7 @@ export default function AnalyzePage() {
       : null;
 
     return { filtered: allProcessed, adjusted, arvResult, repairEstimate, maoResult };
-  }, [subject, rawComps, overriddenComps, deselectedComps, arvOverride, repairMode, quickRepairRate, repairItems, otherRepairAmount]);
+  }, [subject, rawComps, overriddenComps, deselectedComps, arvOverride, repairMode, quickRepairRate, repairItems, otherRepairAmount, aiRepairEstimate, aiRepairOverrides]);
 
   const qualifiedCount = filtered.filter(c => c._status === 'qualified').length;
   const flaggedCount = filtered.filter(c => c._status === 'flagged').length;
@@ -878,6 +977,9 @@ export default function AnalyzePage() {
 
             {/* Mode Toggle */}
             <div className="flex rounded-lg border border-border overflow-hidden mb-6 w-fit">
+              <button onClick={() => { if (aiRepairEstimate) setRepairMode('ai'); else if (uploadedPhotos.length > 0) runAiRepairEstimate(); else runAlgorithmicEstimate(); }} className={`px-5 py-2 text-sm font-medium transition-colors ${repairMode === 'ai' ? 'bg-accent text-white' : 'text-muted hover:text-foreground'}`}>
+                {uploadedPhotos.length > 0 ? 'AI Estimate' : 'Smart Estimate'}
+              </button>
               <button onClick={() => setRepairMode('quick')} className={`px-5 py-2 text-sm font-medium transition-colors ${repairMode === 'quick' ? 'bg-accent text-white' : 'text-muted hover:text-foreground'}`}>
                 Quick Mode
               </button>
@@ -886,34 +988,171 @@ export default function AnalyzePage() {
               </button>
             </div>
 
-            {repairMode === 'quick' ? (
-              <div className="grid grid-cols-3 gap-4 mb-6">
-                <QuickRepairCard
-                  label="Light Rehab"
-                  range="$10-15/sqft"
-                  desc="Cosmetic only: paint, carpet, minor fixtures"
-                  color="go"
-                  active={quickRepairRate >= 10 && quickRepairRate <= 15}
-                  onClick={() => setQuickRepairRate(12)}
-                />
-                <QuickRepairCard
-                  label="Medium Rehab"
-                  range="$15-25/sqft"
-                  desc="Kitchen, bathrooms, flooring, some mechanicals"
-                  color="negotiate"
-                  active={quickRepairRate > 15 && quickRepairRate <= 25}
-                  onClick={() => setQuickRepairRate(20)}
-                />
-                <QuickRepairCard
-                  label="Heavy Rehab"
-                  range="$25-40/sqft"
-                  desc="Full gut: structural, all mechanicals, everything"
-                  color="pass"
-                  active={quickRepairRate > 25}
-                  onClick={() => setQuickRepairRate(32)}
-                />
+            {/* Photo Upload Zone */}
+            <div className="mb-6">
+              <div
+                onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add('border-accent'); }}
+                onDragLeave={e => { e.currentTarget.classList.remove('border-accent'); }}
+                onDrop={e => { e.preventDefault(); e.currentTarget.classList.remove('border-accent'); handlePhotoUpload(e.dataTransfer.files); }}
+                onClick={() => document.getElementById('photo-upload-input')?.click()}
+                className="rounded-xl border-2 border-dashed border-border bg-card/30 p-6 text-center cursor-pointer hover:border-accent/50 transition-colors"
+              >
+                <input id="photo-upload-input" type="file" accept="image/jpeg,image/png,image/heic,image/heif" multiple className="hidden" onChange={e => { if (e.target.files) handlePhotoUpload(e.target.files); e.target.value = ''; }} />
+                <svg className="w-8 h-8 text-muted/40 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909M3.75 21h16.5A2.25 2.25 0 0022.5 18.75V5.25A2.25 2.25 0 0020.25 3H3.75A2.25 2.25 0 001.5 5.25v13.5A2.25 2.25 0 003.75 21z" />
+                </svg>
+                <p className="text-sm text-muted">Drop seller photos here or click to browse</p>
+                <p className="text-xs text-muted/50 mt-1">JPG, PNG, HEIC &middot; Max 10 photos &middot; AI analyzes visible repairs</p>
               </div>
-            ) : (
+
+              {/* Photo Thumbnails */}
+              {uploadedPhotos.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-3">
+                  {uploadedPhotos.map((photo, idx) => (
+                    <div key={idx} className="relative group">
+                      <img src={photo.dataUrl} alt={photo.name} className="w-20 h-20 object-cover rounded-lg border border-border" />
+                      <button onClick={(e) => { e.stopPropagation(); removePhoto(idx); }} className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-pass text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                        &times;
+                      </button>
+                      <select
+                        value={photo.label}
+                        onChange={e => setUploadedPhotos(prev => prev.map((p, i) => i === idx ? { ...p, label: e.target.value } : p))}
+                        onClick={e => e.stopPropagation()}
+                        className="absolute bottom-0 left-0 right-0 bg-background/80 text-[9px] text-muted border-0 py-0.5 px-1 rounded-b-lg backdrop-blur"
+                      >
+                        <option value="">Label...</option>
+                        <option value="Kitchen">Kitchen</option>
+                        <option value="Bathroom">Bathroom</option>
+                        <option value="Exterior">Exterior</option>
+                        <option value="Roof">Roof</option>
+                        <option value="Living Room">Living Room</option>
+                        <option value="Bedroom">Bedroom</option>
+                        <option value="Basement">Basement</option>
+                        <option value="Yard">Yard</option>
+                        <option value="Other">Other</option>
+                      </select>
+                    </div>
+                  ))}
+                  <div className="flex items-center">
+                    <span className="text-xs text-muted">{uploadedPhotos.length}/10</span>
+                  </div>
+                </div>
+              )}
+
+              {/* AI Action Buttons */}
+              {uploadedPhotos.length > 0 && !aiRepairEstimate && (
+                <button onClick={runAiRepairEstimate} disabled={aiRepairLoading} className="mt-3 rounded-lg bg-accent px-5 py-2 text-sm font-semibold text-white hover:bg-accent/80 transition-colors disabled:opacity-50">
+                  {aiRepairLoading ? (
+                    <span className="flex items-center gap-2">
+                      <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                      Analyzing photos...
+                    </span>
+                  ) : 'Analyze Photos with AI'}
+                </button>
+              )}
+              {uploadedPhotos.length === 0 && !aiRepairEstimate && (
+                <button onClick={runAlgorithmicEstimate} disabled={aiRepairLoading} className="mt-3 rounded-lg border border-accent/30 px-5 py-2 text-sm font-medium text-accent hover:bg-accent/10 transition-colors disabled:opacity-50">
+                  {aiRepairLoading ? 'Generating...' : 'Generate Smart Estimate'}
+                </button>
+              )}
+
+              {aiRepairError && (
+                <p className="mt-2 text-xs text-pass">{aiRepairError}</p>
+              )}
+            </div>
+
+            {/* ─── AI / Smart Estimate Results ─── */}
+            {repairMode === 'ai' && aiRepairEstimate && (
+              <div className="mb-6">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className={`inline-block w-2 h-2 rounded-full ${aiRepairEstimate.mode === 'ai_photo' ? 'bg-accent' : 'bg-negotiate'}`} />
+                  <span className="text-xs text-muted">
+                    {aiRepairEstimate.mode === 'ai_photo' ? 'AI Photo Analysis' : 'Algorithmic Estimate'} &middot;
+                    Condition: <span className="text-foreground">{aiRepairEstimate.overall_condition}</span> &middot;
+                    Confidence: <span className={aiRepairEstimate.confidence === 'high' ? 'text-go' : aiRepairEstimate.confidence === 'medium' ? 'text-negotiate' : 'text-pass'}>{aiRepairEstimate.confidence}</span>
+                  </span>
+                </div>
+                {aiRepairEstimate.notes && (
+                  <p className="text-xs text-muted/70 mb-3 italic">{aiRepairEstimate.notes}</p>
+                )}
+                <div className="space-y-2">
+                  {aiRepairEstimate.line_items.map((item: RepairLineItem) => {
+                    const override = aiRepairOverrides[item.category];
+                    const currentValue = override != null ? override : item.recommended;
+                    return (
+                      <div key={item.category} className="rounded-lg border border-border bg-card px-4 py-3">
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="flex items-center gap-2">
+                            <span className={`w-1.5 h-1.5 rounded-full ${item.urgency === 'high' ? 'bg-pass' : item.urgency === 'medium' ? 'bg-negotiate' : 'bg-go'}`} />
+                            <span className="text-sm text-foreground font-medium capitalize">{item.category.replace(/_/g, ' ')}</span>
+                          </div>
+                          <span className="text-sm text-gold font-semibold" style={mono}>{money(currentValue)}</span>
+                        </div>
+                        <p className="text-xs text-muted mb-2 ml-3.5">{item.description}</p>
+                        <div className="flex items-center gap-3 ml-3.5">
+                          <span className="text-[10px] text-muted" style={mono}>{money(item.estimate_low)}</span>
+                          <input
+                            type="range"
+                            min={item.estimate_low}
+                            max={item.estimate_high}
+                            step={500}
+                            value={currentValue}
+                            onChange={e => setAiRepairOverrides(prev => ({ ...prev, [item.category]: Number(e.target.value) }))}
+                            className="flex-1 accent-accent"
+                          />
+                          <span className="text-[10px] text-muted" style={mono}>{money(item.estimate_high)}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                {aiRepairEstimate.usage && (
+                  <p className="text-center text-xs text-muted/40 mt-3">AI analysis: ~$0.01 &middot; {aiRepairEstimate.usage.input_tokens + aiRepairEstimate.usage.output_tokens} tokens</p>
+                )}
+              </div>
+            )}
+
+            {/* ─── Quick Mode ─── */}
+            {repairMode === 'quick' && (
+              <>
+                <div className="grid grid-cols-3 gap-4 mb-6">
+                  <QuickRepairCard
+                    label="Light Rehab"
+                    range="$10-15/sqft"
+                    desc="Cosmetic only: paint, carpet, minor fixtures"
+                    color="go"
+                    active={quickRepairRate >= 10 && quickRepairRate <= 15}
+                    onClick={() => setQuickRepairRate(12)}
+                  />
+                  <QuickRepairCard
+                    label="Medium Rehab"
+                    range="$15-25/sqft"
+                    desc="Kitchen, bathrooms, flooring, some mechanicals"
+                    color="negotiate"
+                    active={quickRepairRate > 15 && quickRepairRate <= 25}
+                    onClick={() => setQuickRepairRate(20)}
+                  />
+                  <QuickRepairCard
+                    label="Heavy Rehab"
+                    range="$25-40/sqft"
+                    desc="Full gut: structural, all mechanicals, everything"
+                    color="pass"
+                    active={quickRepairRate > 25}
+                    onClick={() => setQuickRepairRate(32)}
+                  />
+                </div>
+                <div className="rounded-xl border border-border bg-card p-5 mb-6">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs text-muted">Rate: ${quickRepairRate}/sqft</span>
+                    <span className="text-xs text-muted">{subject.sqft?.toLocaleString() || '1,500'} sqft</span>
+                  </div>
+                  <input type="range" min="5" max="50" value={quickRepairRate} onChange={e => setQuickRepairRate(Number(e.target.value))} className="w-full accent-accent" />
+                </div>
+              </>
+            )}
+
+            {/* ─── Detailed Mode ─── */}
+            {repairMode === 'detailed' && (
               <div className="space-y-3 mb-6">
                 {repairItems.map((item, idx) => (
                   <RepairSlider
@@ -932,23 +1171,18 @@ export default function AnalyzePage() {
               </div>
             )}
 
-            {/* Quick mode rate slider */}
-            {repairMode === 'quick' && (
-              <div className="rounded-xl border border-border bg-card p-5 mb-6">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs text-muted">Rate: ${quickRepairRate}/sqft</span>
-                  <span className="text-xs text-muted">{subject.sqft?.toLocaleString() || '1,500'} sqft</span>
-                </div>
-                <input type="range" min="5" max="50" value={quickRepairRate} onChange={e => setQuickRepairRate(Number(e.target.value))} className="w-full accent-accent" />
-              </div>
-            )}
-
             {/* Running Total */}
             <div className="rounded-xl border border-gold/30 bg-card p-6 text-center">
               <p className="text-xs text-muted mb-1">Estimated Repairs</p>
               <p className="text-4xl font-bold text-gold" style={mono}>{money(repairEstimate)}</p>
               {repairMode === 'quick' && (
                 <p className="text-xs text-muted mt-1">${quickRepairRate}/sqft x {(subject.sqft || 1500).toLocaleString()} sqft</p>
+              )}
+              {repairMode === 'ai' && aiRepairEstimate && (
+                <div className="flex items-center justify-center gap-4 mt-1 text-xs text-muted">
+                  <span>Low: <span style={mono}>{money(aiRepairEstimate.total_low)}</span></span>
+                  <span>High: <span style={mono}>{money(aiRepairEstimate.total_high)}</span></span>
+                </div>
               )}
             </div>
 
