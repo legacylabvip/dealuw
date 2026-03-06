@@ -117,6 +117,8 @@ export default function AnalyzePage() {
   const [exporting, setExporting] = useState(false);
   const [dataSource, setDataSource] = useState<'zoria' | 'manual' | null>(null);
   const [loadingTooLong, setLoadingTooLong] = useState(false);
+  const [lookupStatus, setLookupStatus] = useState<string | null>(null);
+  const [lookupFailed, setLookupFailed] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tooLongRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -175,28 +177,43 @@ export default function AnalyzePage() {
     setAnalysisSteps(prev => prev.map((s, i) => i === idx ? { ...s, ...update } : s));
   };
 
-  // Helper: fetch with abort controller and timeout
+  // Helper: fetch with abort controller and 60-second timeout
   const zoriaFetch = async (url: string, body: unknown, signal?: AbortSignal) => {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 90000);
-    const mergedSignal = signal || controller.signal;
+    const timeout = setTimeout(() => {
+      console.log(`[DealUW] Timeout: ${url} took >60s, aborting`);
+      controller.abort();
+    }, 60000);
+
+    // If external signal aborts, also abort our controller
+    if (signal) {
+      signal.addEventListener('abort', () => controller.abort());
+    }
+
     try {
+      console.log(`[DealUW] Fetching: ${url}`);
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        signal: mergedSignal,
+        signal: controller.signal,
       });
       clearTimeout(timeout);
+      console.log(`[DealUW] Response: ${url} → ${res.status}`);
       return res;
     } catch (err) {
       clearTimeout(timeout);
+      console.error(`[DealUW] Fetch failed: ${url}`, err);
       throw err;
     }
   };
 
   const runAnalysis = async () => {
     if (!subject.address) return;
+    console.log('[DealUW] runAnalysis triggered for:', subject.address);
+
+    setLookupStatus('Searching...');
+    setLookupFailed(false);
     setStep('loading');
     setReport(null);
     setAiAnalysis(null);
@@ -213,7 +230,7 @@ export default function AnalyzePage() {
     tooLongRef.current = setTimeout(() => setLoadingTooLong(true), 20000);
 
     const steps: AnalysisStep[] = [
-      { label: 'Asking Zoria to research property...', status: 'pending' },
+      { label: 'Looking up property details...', status: 'pending' },
       { label: 'Searching for comparable sales...', status: 'pending' },
       { label: 'Filtering comps (7 appraisal rules)...', status: 'pending' },
       { label: 'Applying adjustments...', status: 'pending' },
@@ -227,15 +244,20 @@ export default function AnalyzePage() {
     let currentSubject = { ...subject };
     let rawComps: Record<string, unknown>[] = [];
     let source: 'zoria' | 'manual' = 'manual';
+    let propertyFound = false;
+    let compsFound = false;
 
     try {
       // Step 0: Property lookup via Zoria
-      updateStep(0, { status: 'running' });
+      updateStep(0, { status: 'running', detail: 'Looking up property details...' });
+      setLookupStatus('Looking up property details...');
+      console.log('[DealUW] Step 0: Property lookup starting');
       try {
         const lookupRes = await zoriaFetch('/api/lookup/property', {
           address: subject.address, city: subject.city, state: subject.state, zip: subject.zip,
         }, abort.signal);
         const lookupData = await lookupRes.json();
+        console.log('[DealUW] Step 0: Property lookup response:', lookupData);
         if (lookupData.available && lookupData.property) {
           const p = lookupData.property;
           currentSubject = {
@@ -265,17 +287,26 @@ export default function AnalyzePage() {
           };
           setSubject(currentSubject);
           source = 'zoria';
-          updateStep(0, { status: 'done', detail: `${currentSubject.beds}bd/${currentSubject.baths}ba, ${currentSubject.sqft?.toLocaleString()} sqft` });
+          propertyFound = true;
+          updateStep(0, { status: 'done', detail: `Property found! ${currentSubject.beds}bd/${currentSubject.baths}ba, ${currentSubject.sqft?.toLocaleString()} sqft` });
+          setLookupStatus('Property found! Pulling comps...');
+          console.log('[DealUW] Step 0: Property found:', currentSubject.beds, 'bd/', currentSubject.baths, 'ba/', currentSubject.sqft, 'sqft');
         } else {
-          updateStep(0, { status: 'done', detail: 'Auto-lookup unavailable — using manual data' });
+          console.log('[DealUW] Step 0: Property not found, falling back to manual');
+          updateStep(0, { status: 'done', detail: 'Property not found. Enter details manually.' });
+          setLookupStatus('Property not found. Enter details manually.');
         }
       } catch (err) {
+        console.error('[DealUW] Step 0: Property lookup error:', err);
         if (abort.signal.aborted) throw err;
-        updateStep(0, { status: 'done', detail: 'Zoria unavailable — using manual data' });
+        updateStep(0, { status: 'error', detail: 'Something went wrong. Enter details manually.' });
+        setLookupStatus('Something went wrong. Enter details manually.');
       }
 
       // Step 1: Pull comps via Zoria
-      updateStep(1, { status: 'running' });
+      updateStep(1, { status: 'running', detail: 'Searching for comparable sales...' });
+      setLookupStatus(propertyFound ? 'Searching for comparable sales...' : 'Searching for comps...');
+      console.log('[DealUW] Step 1: Comp lookup starting');
       try {
         const compsRes = await zoriaFetch('/api/lookup/comps', {
           address: currentSubject.address,
@@ -285,25 +316,40 @@ export default function AnalyzePage() {
           subject_details: currentSubject,
         }, abort.signal);
         const compsData = await compsRes.json();
+        console.log('[DealUW] Step 1: Comps response:', compsData.available, 'count:', compsData.comps?.length);
         if (compsData.available && compsData.comps?.length > 0) {
           rawComps = compsData.comps;
           source = 'zoria';
-          updateStep(1, { status: 'done', detail: `${rawComps.length} comps found via Zoria` });
+          compsFound = true;
+          updateStep(1, { status: 'done', detail: `Found ${rawComps.length} comps!` });
+          setLookupStatus(`Found ${rawComps.length} comps!`);
         } else {
-          updateStep(1, { status: 'done', detail: 'No comps found — add manually' });
+          console.log('[DealUW] Step 1: No comps found');
+          updateStep(1, { status: 'done', detail: 'No comps found automatically. Add comps manually.' });
+          setLookupStatus('No comps found automatically. Add comps manually.');
         }
       } catch (err) {
+        console.error('[DealUW] Step 1: Comp lookup error:', err);
         if (abort.signal.aborted) throw err;
-        updateStep(1, { status: 'done', detail: 'Comp search failed — add manually' });
+        updateStep(1, { status: 'error', detail: 'Comp search failed. Add comps manually.' });
+        setLookupStatus('Comp search failed. Add comps manually.');
+      }
+
+      // If both lookups failed, mark as failed so we can show manual fallback
+      if (!propertyFound && !compsFound) {
+        setLookupFailed(true);
+        console.log('[DealUW] Both lookups failed — manual fallback mode');
       }
 
       setDataSource(source);
+      console.log('[DealUW] Data source:', source, '| rawComps:', rawComps.length);
 
       // Step 2: Filter comps
       updateStep(2, { status: 'running' });
       const filtered = filterComps(currentSubject, rawComps);
       const qualified = filtered.qualified;
       const disqualified = filtered.disqualified;
+      console.log('[DealUW] Step 2: Filter comps — qualified:', qualified.length, 'disqualified:', disqualified.length);
       updateStep(2, { status: 'done', detail: `${qualified.length} qualified, ${disqualified.length} excluded` });
 
       // Step 3: Adjust comps
@@ -431,12 +477,16 @@ export default function AnalyzePage() {
       // Transition to report
       setTimeout(() => setStep('report'), 600);
     } catch (err) {
+      console.error('[DealUW] runAnalysis error:', err);
       if (tooLongRef.current) clearTimeout(tooLongRef.current);
       if (abort.signal.aborted) {
         setAnalysisSteps(prev => prev.map(s => s.status === 'running' ? { ...s, status: 'error', detail: 'Cancelled' } : s));
+        setLookupStatus('Analysis cancelled.');
       } else {
         const msg = err instanceof Error ? err.message : 'Analysis failed';
         setAnalysisSteps(prev => prev.map(s => s.status === 'running' ? { ...s, status: 'error', detail: msg } : s));
+        setLookupStatus('Something went wrong. Enter details manually.');
+        setLookupFailed(true);
       }
     }
   };
@@ -625,6 +675,70 @@ export default function AnalyzePage() {
               </div>
             </div>
 
+            {/* Property Details (auto-filled from Zoria or manual entry) */}
+            <div className="rounded-xl border border-border bg-card p-6 mb-6">
+              <h3 className="text-sm font-semibold text-accent mb-4">
+                Property Details
+                {dataSource === 'zoria' && <span className="ml-2 rounded-full bg-accent/10 text-accent px-2 py-0.5 text-xs font-normal">Auto-filled from Zoria</span>}
+              </h3>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+                <div>
+                  <label className="block text-xs text-muted mb-1">Beds</label>
+                  <input type="number" placeholder="0" value={subject.beds ?? ''} onChange={e => setSubject(s => ({ ...s, beds: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" />
+                </div>
+                <div>
+                  <label className="block text-xs text-muted mb-1">Baths</label>
+                  <input type="number" step="0.5" placeholder="0" value={subject.baths ?? ''} onChange={e => setSubject(s => ({ ...s, baths: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" />
+                </div>
+                <div>
+                  <label className="block text-xs text-muted mb-1">Sqft</label>
+                  <input type="number" placeholder="0" value={subject.sqft ?? ''} onChange={e => setSubject(s => ({ ...s, sqft: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" style={mono} />
+                </div>
+                <div>
+                  <label className="block text-xs text-muted mb-1">Lot Sqft</label>
+                  <input type="number" placeholder="0" value={subject.lot_sqft ?? ''} onChange={e => setSubject(s => ({ ...s, lot_sqft: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" style={mono} />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <div>
+                  <label className="block text-xs text-muted mb-1">Year Built</label>
+                  <input type="number" placeholder="1990" value={subject.year_built ?? ''} onChange={e => setSubject(s => ({ ...s, year_built: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" />
+                </div>
+                <div>
+                  <label className="block text-xs text-muted mb-1">Property Type</label>
+                  <select value={subject.property_type} onChange={e => setSubject(s => ({ ...s, property_type: e.target.value }))} className="input-std w-full">
+                    {PROPERTY_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-muted mb-1">Condition</label>
+                  <select value={subject.condition} onChange={e => setSubject(s => ({ ...s, condition: e.target.value }))} className="input-std w-full">
+                    {['excellent', 'good', 'fair', 'poor'].map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-muted mb-1">Traffic/Commercial</label>
+                  <select value={subject.traffic_commercial} onChange={e => setSubject(s => ({ ...s, traffic_commercial: e.target.value }))} className="input-std w-full">
+                    {['none', 'siding', 'backing', 'fronting'].map(o => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-4 mt-3">
+                <label className="flex items-center gap-2 text-xs text-muted cursor-pointer">
+                  <input type="checkbox" checked={subject.has_pool} onChange={e => setSubject(s => ({ ...s, has_pool: e.target.checked }))} className="accent-[#3AADE8]" /> Pool
+                </label>
+                <label className="flex items-center gap-2 text-xs text-muted cursor-pointer">
+                  <input type="checkbox" checked={subject.has_garage} onChange={e => setSubject(s => ({ ...s, has_garage: e.target.checked }))} className="accent-[#3AADE8]" /> Garage
+                </label>
+                <label className="flex items-center gap-2 text-xs text-muted cursor-pointer">
+                  <input type="checkbox" checked={subject.has_basement} onChange={e => setSubject(s => ({ ...s, has_basement: e.target.checked }))} className="accent-[#3AADE8]" /> Basement
+                </label>
+                <label className="flex items-center gap-2 text-xs text-muted cursor-pointer">
+                  <input type="checkbox" checked={subject.has_carport} onChange={e => setSubject(s => ({ ...s, has_carport: e.target.checked }))} className="accent-[#3AADE8]" /> Carport
+                </label>
+              </div>
+            </div>
+
             {/* Seller Info */}
             <div className="rounded-xl border border-border bg-card p-6 mb-6">
               <h3 className="text-sm font-semibold text-accent mb-4">Seller Info <span className="text-muted font-normal">(optional — from your conversation)</span></h3>
@@ -653,9 +767,20 @@ export default function AnalyzePage() {
               <textarea placeholder="Notes from seller conversation..." value={subject.seller_notes} onChange={e => setSubject(s => ({ ...s, seller_notes: e.target.value }))} rows={2} className="input-std w-full resize-none" />
             </div>
 
+            {/* Lookup Status Message */}
+            {lookupStatus && step === 'input' && (
+              <div className={`rounded-xl border px-5 py-3 text-sm ${lookupFailed ? 'border-negotiate/30 bg-negotiate/5 text-negotiate' : 'border-accent/30 bg-accent/5 text-accent'}`}>
+                {lookupStatus}
+              </div>
+            )}
+
             {/* Run Button */}
-            <button onClick={runAnalysis} disabled={!subject.address} className="w-full rounded-xl bg-accent py-5 text-lg font-bold text-white transition-all hover:bg-accent/80 disabled:opacity-30 disabled:cursor-not-allowed">
-              Run Full Analysis
+            <button
+              onClick={runAnalysis}
+              disabled={!subject.address || lookupStatus === 'Searching...'}
+              className="w-full rounded-xl bg-accent py-5 text-lg font-bold text-white transition-all hover:bg-accent/80 disabled:opacity-30 disabled:cursor-not-allowed"
+            >
+              {lookupStatus === 'Searching...' ? 'Searching...' : 'Run Full Analysis'}
             </button>
           </div>
         )}
@@ -686,11 +811,27 @@ export default function AnalyzePage() {
                 </div>
               ))}
             </div>
-            {loadingTooLong && (
+            {/* Manual fallback — shown when lookups failed */}
+            {lookupFailed && (
+              <div className="mt-8 text-center animate-fadeIn">
+                <div className="rounded-xl border border-negotiate/30 bg-negotiate/5 px-5 py-3 mb-4 inline-block">
+                  <p className="text-sm text-negotiate">Auto-lookup couldn&apos;t find this property. Enter details manually.</p>
+                </div>
+                <br />
+                <button
+                  onClick={() => { if (abortRef.current) abortRef.current.abort(); setStep('input'); setLookupStatus('Auto-lookup couldn\'t find this property. Enter details manually.'); setLookupFailed(true); }}
+                  className="rounded-lg bg-accent px-6 py-2.5 text-sm font-semibold text-white hover:bg-accent/80 transition-colors"
+                >
+                  Enter Details Manually
+                </button>
+              </div>
+            )}
+
+            {loadingTooLong && !lookupFailed && (
               <div className="mt-8 text-center animate-fadeIn">
                 <p className="text-xs text-negotiate mb-3">Taking longer than expected...</p>
                 <button
-                  onClick={() => { if (abortRef.current) abortRef.current.abort(); setStep('input'); setLoadingTooLong(false); }}
+                  onClick={() => { if (abortRef.current) abortRef.current.abort(); setStep('input'); setLoadingTooLong(false); setLookupStatus('Lookup timed out. Enter details manually.'); setLookupFailed(true); }}
                   className="rounded-lg border border-border px-4 py-2 text-xs text-muted hover:text-foreground transition-colors"
                 >
                   Switch to manual entry

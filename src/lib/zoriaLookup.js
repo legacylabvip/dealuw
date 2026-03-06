@@ -3,6 +3,7 @@
 
 const ZORIA_API = process.env.ZORIA_API_URL || 'http://localhost:3100/api/zoria';
 const ZORIA_KEY = process.env.ZORIA_API_KEY || 'house-of-iverson-2026';
+const DEALUW_API_KEY = process.env.DEALUW_API_KEY || '';
 
 // ─── Response Parsing ────────────────────────────────────────────────────────
 // Zoria may wrap JSON in explanation text — we need to extract it robustly.
@@ -70,6 +71,7 @@ export async function lookupProperty(address, city, state, zip) {
     headers: {
       'Content-Type': 'application/json',
       'x-zoria-key': ZORIA_KEY,
+      'x-api-key': DEALUW_API_KEY,
     },
     body: JSON.stringify({
       action: 'research_property',
@@ -132,6 +134,7 @@ export async function lookupComps(address, city, state, zip, subject) {
     headers: {
       'Content-Type': 'application/json',
       'x-zoria-key': ZORIA_KEY,
+      'x-api-key': DEALUW_API_KEY,
     },
     body: JSON.stringify({
       action: 'research_comps',
@@ -207,6 +210,7 @@ export async function analyzePhotos(photos, property) {
     headers: {
       'Content-Type': 'application/json',
       'x-zoria-key': ZORIA_KEY,
+      'x-api-key': DEALUW_API_KEY,
     },
     body: JSON.stringify({
       action: 'analyze_photos',

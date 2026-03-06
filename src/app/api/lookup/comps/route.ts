@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
     const db = getDb();
     ensureCacheTable(db);
     const cacheKey = `${address}|${city}|${state}|${zip}`.toLowerCase();
-    const cached = db.prepare('SELECT data FROM lookup_cache WHERE cache_key = ? AND type = ? AND created_at > datetime("now", "-1 day")').get(cacheKey, 'comps') as { data: string } | undefined;
+    const cached = db.prepare("SELECT data FROM lookup_cache WHERE cache_key = ? AND type = ? AND created_at > datetime('now', '-1 day')").get(cacheKey, 'comps') as { data: string } | undefined;
 
     let rawComps: Record<string, unknown>[];
 
@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
       }
 
       // Cache
-      db.prepare('INSERT OR REPLACE INTO lookup_cache (cache_key, type, data, created_at) VALUES (?, ?, ?, datetime("now"))').run(cacheKey, 'comps', JSON.stringify(rawComps));
+      db.prepare("INSERT OR REPLACE INTO lookup_cache (cache_key, type, data, created_at) VALUES (?, ?, ?, datetime('now'))").run(cacheKey, 'comps', JSON.stringify(rawComps));
     }
 
     // Run through comp engine filter

@@ -13,7 +13,7 @@ export async function POST(req: NextRequest) {
     const db = getDb();
     ensureCacheTable(db);
     const cacheKey = `${address}|${city}|${state}|${zip}`.toLowerCase();
-    const cached = db.prepare('SELECT data FROM lookup_cache WHERE cache_key = ? AND type = ? AND created_at > datetime("now", "-7 days")').get(cacheKey, 'property') as { data: string } | undefined;
+    const cached = db.prepare("SELECT data FROM lookup_cache WHERE cache_key = ? AND type = ? AND created_at > datetime('now', '-7 days')").get(cacheKey, 'property') as { data: string } | undefined;
 
     if (cached) {
       const data = JSON.parse(cached.data);
@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
     const property = normalizeProperty(parsed, address, city, state, zip);
 
     // Cache it
-    db.prepare('INSERT OR REPLACE INTO lookup_cache (cache_key, type, data, created_at) VALUES (?, ?, ?, datetime("now"))').run(cacheKey, 'property', JSON.stringify(property));
+    db.prepare("INSERT OR REPLACE INTO lookup_cache (cache_key, type, data, created_at) VALUES (?, ?, ?, datetime('now'))").run(cacheKey, 'property', JSON.stringify(property));
 
     return NextResponse.json({ available: true, property, source: 'zoria' });
   } catch (error: unknown) {
