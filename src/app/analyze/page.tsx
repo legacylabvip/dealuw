@@ -169,6 +169,10 @@ export default function AnalyzePage() {
   // Editing property fields in report
   const [editingField, setEditingField] = useState<string | null>(null);
 
+  // Property lookup
+  const [lookingUp, setLookingUp] = useState(false);
+  const [lookupMessage, setLookupMessage] = useState<string | null>(null);
+
   // Toast
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
 
@@ -321,6 +325,53 @@ export default function AnalyzePage() {
     } : prev);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [manualComps, step]);
+
+  // ─── Look Up Property ────────────────────────────────────────
+
+  const lookUpProperty = async () => {
+    if (!subject.address) return;
+    setLookingUp(true);
+    setLookupMessage('Searching for property details...');
+    try {
+      const res = await fetch('/api/lookup/property', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: subject.address, city: subject.city, state: subject.state, zip: subject.zip }),
+      });
+      const data = await res.json();
+      if (data.available && data.property) {
+        const p = data.property;
+        setSubject(s => ({
+          ...s,
+          beds: p.beds ?? s.beds,
+          baths: p.baths ?? s.baths,
+          sqft: p.sqft ?? s.sqft,
+          lot_sqft: p.lot_sqft ?? s.lot_sqft,
+          year_built: p.year_built ?? s.year_built,
+          property_type: p.property_type || s.property_type,
+          has_pool: p.has_pool ?? s.has_pool,
+          has_garage: p.has_garage ?? s.has_garage,
+          garage_count: p.garage_count ?? s.garage_count,
+          has_carport: p.has_carport ?? s.has_carport,
+          has_basement: p.has_basement ?? s.has_basement,
+          basement_sqft: p.basement_sqft ?? s.basement_sqft,
+          has_guest_house: p.has_guest_house ?? s.has_guest_house,
+          guest_house_sqft: p.guest_house_sqft ?? s.guest_house_sqft,
+          tax_assessed_value: p.tax_assessed_value ?? s.tax_assessed_value,
+          last_sale_price: p.last_sale_price ?? s.last_sale_price,
+          last_sale_date: p.last_sale_date ?? s.last_sale_date,
+          subdivision: p.subdivision ?? s.subdivision,
+        }));
+        setDataSource('zoria');
+        setLookupMessage(`Found! ${p.beds ?? '?'}bd/${p.baths ?? '?'}ba, ${p.sqft?.toLocaleString() ?? '?'} sqft`);
+      } else {
+        setLookupMessage("Couldn't find property. Enter details manually.");
+      }
+    } catch {
+      setLookupMessage("Couldn't find property. Enter details manually.");
+    }
+    setLookingUp(false);
+  };
 
   // ─── Run Full Analysis ────────────────────────────────────────
 
@@ -659,6 +710,17 @@ export default function AnalyzePage() {
                   <input placeholder="State" value={subject.state} onChange={e => setSubject(s => ({ ...s, state: e.target.value }))} className="input-std" />
                   <input placeholder="ZIP" value={subject.zip} onChange={e => setSubject(s => ({ ...s, zip: e.target.value }))} className="input-std" />
                 </div>
+                <button
+                  type="button"
+                  onClick={lookUpProperty}
+                  disabled={!subject.address || lookingUp}
+                  className="mt-3 w-full rounded-lg border border-accent/30 bg-accent/5 px-4 py-2.5 text-sm font-medium text-accent hover:bg-accent/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                  {lookingUp ? 'Searching for property details...' : 'Look Up Property'}
+                </button>
+                {lookupMessage && !lookingUp && (
+                  <p className={`mt-2 text-xs ${dataSource === 'zoria' ? 'text-go' : 'text-negotiate'}`}>{lookupMessage}</p>
+                )}
               </div>
 
               {/* Photos */}
@@ -737,10 +799,10 @@ export default function AnalyzePage() {
             {/* Run Button */}
             <button
               onClick={runAnalysis}
-              disabled={!subject.address || lookupStatus === 'Searching...'}
+              disabled={!subject.address}
               className="w-full rounded-xl bg-accent py-5 text-lg font-bold text-white transition-all hover:bg-accent/80 disabled:opacity-30 disabled:cursor-not-allowed"
             >
-              {lookupStatus === 'Searching...' ? 'Searching...' : 'Run Full Analysis'}
+              Create Deal & Begin Analysis
             </button>
           </div>
         )}
