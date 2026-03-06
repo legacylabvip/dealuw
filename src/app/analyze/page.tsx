@@ -1,9 +1,8 @@
 'use client';
 
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import Navbar from '@/components/Navbar';
-import { COMP_RULES } from '@/lib/compRules';
 import { filterComps, adjustComps, calculateARV, type AdjustedComp, type ARVResult, type Adjustment } from '@/lib/compEngine';
 import type { RepairEstimate, RepairLineItem } from '@/lib/repairEstimator';
 import type { AllOffers, CashOffer, OwnerFinanceOffer, NovationOffer, NegotiationGuide } from '@/lib/offerCalculator';
@@ -33,16 +32,27 @@ interface Subject {
   guest_house_sqft: number;
   traffic_commercial: string;
   asking_price: number | null;
-  // Extended seller info
   seller_motivation: string;
   seller_timeline: string;
   monthly_rent: number | null;
   seller_notes: string;
-  // From property lookup
   tax_assessed_value: number | null;
   last_sale_price: number | null;
   last_sale_date: string | null;
   subdivision: string | null;
+}
+
+interface ManualComp {
+  address: string;
+  sale_price: number;
+  sale_date: string;
+  sqft: number;
+  beds: number;
+  baths: number;
+  year_built: number;
+  distance_miles: number;
+  same_subdivision: boolean;
+  property_type: string;
 }
 
 interface UploadedPhoto {
@@ -60,18 +70,14 @@ interface AnalysisStep {
 interface FullReport {
   subject: Subject;
   photos: UploadedPhoto[];
-  // Comp engine
   rawComps: Record<string, unknown>[];
   qualified: Record<string, unknown>[];
   disqualified: Record<string, unknown>[];
   adjusted: AdjustedComp[];
   arvResult: ARVResult | null;
-  // Repairs
   repairEstimate: RepairEstimate | null;
-  // Offers
   allOffers: AllOffers | null;
   negotiationGuide: NegotiationGuide | null;
-  // Meta
   generatedAt: string;
   confidence: string;
 }
@@ -100,6 +106,31 @@ const defaultSubject: Subject = {
   tax_assessed_value: null, last_sale_price: null, last_sale_date: null, subdivision: null,
 };
 
+const emptyManualComp: ManualComp = {
+  address: '', sale_price: 0, sale_date: '', sqft: 0, beds: 3, baths: 2,
+  year_built: 2000, distance_miles: 0.5, same_subdivision: false, property_type: 'ranch',
+};
+
+// Monthly payment calc
+function calcMonthlyPayment(principal: number, annualRate: number, years: number): number {
+  if (principal <= 0 || annualRate <= 0 || years <= 0) return 0;
+  const r = annualRate / 12;
+  const n = years * 12;
+  return principal * (r * Math.pow(1 + r, n)) / (Math.pow(1 + r, n) - 1);
+}
+
+// ─── Toast ──────────────────────────────────────────────────────────────────
+
+function Toast({ message, type, onDone }: { message: string; type: 'success' | 'error' | 'info'; onDone: () => void }) {
+  useEffect(() => { const t = setTimeout(onDone, 3000); return () => clearTimeout(t); }, [onDone]);
+  const bg = type === 'success' ? 'bg-go/90' : type === 'error' ? 'bg-pass/90' : 'bg-accent/90';
+  return (
+    <div className={`fixed bottom-6 right-6 z-50 ${bg} text-white px-5 py-3 rounded-xl shadow-lg text-sm font-medium animate-fadeIn`}>
+      {message}
+    </div>
+  );
+}
+
 // ─── Main Component ─────────────────────────────────────────────────────────
 
 export default function AnalyzePage() {
@@ -114,47 +145,106 @@ export default function AnalyzePage() {
   const [showDqComps, setShowDqComps] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState<AIAnalysisResult | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
-  const [exporting, setExporting] = useState(false);
   const [dataSource, setDataSource] = useState<'zoria' | 'manual' | null>(null);
   const [loadingTooLong, setLoadingTooLong] = useState(false);
   const [lookupStatus, setLookupStatus] = useState<string | null>(null);
   const [lookupFailed, setLookupFailed] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tooLongRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ─── Export PDF ─────────────────────────────────────────────────
+  // Manual comps
+  const [manualComps, setManualComps] = useState<ManualComp[]>([]);
+  const [showCompForm, setShowCompForm] = useState(false);
+  const [compDraft, setCompDraft] = useState<ManualComp>({ ...emptyManualComp });
 
-  const exportPDF = async () => {
-    if (!report) return;
-    setExporting(true);
-    try {
-      const res = await fetch('/api/export-pdf', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          subject: report.subject,
-          arvResult: report.arvResult,
-          repairEstimate: report.repairEstimate,
-          allOffers: report.allOffers,
-          adjusted: report.adjusted,
-          generatedAt: report.generatedAt,
-          confidence: report.confidence,
-        }),
-      });
-      if (!res.ok) throw new Error('PDF generation failed');
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `DealUW_${report.subject.address.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 40)}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch { /* ignore */ }
-    setExporting(false);
-  };
+  // ARV override
+  const [arvOverride, setArvOverride] = useState<number | null>(null);
+
+  // Editable offer params
+  const [ofInterestRate, setOfInterestRate] = useState(6);
+  const [ofTermYears, setOfTermYears] = useState(30);
+  const [ofEstimatedRent, setOfEstimatedRent] = useState(1200);
+  const [novHoldingCosts, setNovHoldingCosts] = useState(6000);
+
+  // Editing property fields in report
+  const [editingField, setEditingField] = useState<string | null>(null);
+
+  // Toast
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
+
+  // ─── Compute effective ARV and offers reactively ────────────────
+
+  const effectiveArv = useMemo(() => {
+    if (arvOverride != null && arvOverride > 0) return arvOverride;
+    return report?.arvResult?.arv ?? 0;
+  }, [arvOverride, report?.arvResult?.arv]);
+
+  const effectiveRepairs = report?.repairEstimate?.total_recommended ?? 0;
+
+  // Real-time three-offer calculation
+  const liveOffers = useMemo(() => {
+    if (effectiveArv <= 0) return null;
+    const arv = effectiveArv;
+    const repairs = effectiveRepairs;
+    const asking = report?.subject.asking_price ?? subject.asking_price;
+
+    // CASH
+    const mao = Math.round(arv * 0.70 - repairs);
+    const cashStart = Math.round(mao * 0.85);
+    const cashAssignCon = Math.max(5000, Math.round(mao * 0.05));
+    const cashAssignTgt = Math.max(8000, Math.round(mao * 0.08));
+    const cashAssignAgg = Math.max(10000, Math.round(mao * 0.12));
+    const buyerProfit = arv - mao - repairs;
+    const buyerInvestment = mao + repairs;
+    const buyerRoi = buyerInvestment > 0 ? (buyerProfit / buyerInvestment) * 100 : 0;
+    const spread = asking != null && asking > 0 ? mao - asking : null;
+    const cashWorks = mao > 0 && buyerProfit > 0;
+
+    // OWNER FINANCE
+    const ofPurchase = Math.round(arv * 0.80 - repairs);
+    const ofDown = Math.round(ofPurchase * 0.10);
+    const ofFinanced = ofPurchase - ofDown;
+    const ofRate = ofInterestRate / 100;
+    const ofMonthly = Math.round(calcMonthlyPayment(ofFinanced, ofRate, ofTermYears));
+    const rent = ofEstimatedRent;
+    const ofCashflow = rent - ofMonthly;
+    const ofAssignment = Math.round(ofDown * 0.50);
+    const ofTotalSeller = (ofMonthly * ofTermYears * 12) + ofDown;
+    const ofStartPrice = Math.round(ofPurchase * 0.90);
+    const ofStartDown = Math.round(ofPurchase * 0.05);
+    const ofWorks = ofPurchase > 0 && ofCashflow > 0;
+
+    // NOVATION
+    const novSeller = Math.round(arv * 0.75 - repairs * 0.50);
+    const novReno = repairs;
+    const novList = Math.round(arv * 0.98);
+    const novCommission = Math.round(novList * 0.05);
+    const novClosing = Math.round(novList * 0.02);
+    const novHolding = novHoldingCosts;
+    const novTotalCosts = novReno + novCommission + novClosing + novHolding;
+    const novProfit = novList - novSeller - novTotalCosts;
+    const novStartSeller = Math.round(novSeller * 0.90);
+    const novWorks = novProfit > 0 && novSeller > 0;
+
+    // Best strategy
+    const profits = [
+      { name: 'Cash', profit: cashAssignTgt, works: cashWorks },
+      { name: 'Owner Finance', profit: ofAssignment + ofCashflow * 12, works: ofWorks },
+      { name: 'Novation', profit: novProfit, works: novWorks },
+    ].filter(s => s.works).sort((a, b) => b.profit - a.profit);
+    const best = profits.length > 0 ? profits[0].name : 'Pass';
+
+    return {
+      arv, repairs, asking, mao, cashStart, cashAssignCon, cashAssignTgt, cashAssignAgg,
+      buyerProfit, buyerRoi, spread, cashWorks,
+      ofPurchase, ofDown, ofFinanced, ofRate, ofMonthly, rent, ofCashflow, ofAssignment,
+      ofTotalSeller, ofStartPrice, ofStartDown, ofWorks,
+      novSeller, novReno, novList, novCommission, novClosing, novHolding, novTotalCosts,
+      novProfit, novStartSeller, novWorks,
+      best,
+    };
+  }, [effectiveArv, effectiveRepairs, report?.subject.asking_price, subject.asking_price,
+      ofInterestRate, ofTermYears, ofEstimatedRent, novHoldingCosts]);
 
   // ─── Photo upload ─────────────────────────────────────────────
 
@@ -171,35 +261,85 @@ export default function AnalyzePage() {
     });
   }, [photos.length]);
 
+  // ─── Add manual comp ──────────────────────────────────────────
+
+  const addManualComp = () => {
+    if (!compDraft.address || !compDraft.sale_price) return;
+    if (manualComps.length >= 10) return;
+    setManualComps(prev => [...prev, { ...compDraft }]);
+    setCompDraft({ ...emptyManualComp });
+    setShowCompForm(false);
+  };
+
+  const removeManualComp = (idx: number) => {
+    setManualComps(prev => prev.filter((_, i) => i !== idx));
+  };
+
+  // Re-run comp engine when manual comps change (in report view)
+  useEffect(() => {
+    if (step !== 'report' || !report) return;
+    if (manualComps.length === 0 && report.rawComps.length === 0) return;
+
+    // Merge manual comps with Zoria comps
+    const manualAsRaw: Record<string, unknown>[] = manualComps.map(c => ({
+      address: c.address,
+      sale_price: c.sale_price,
+      sale_date: c.sale_date,
+      sqft: c.sqft,
+      beds: c.beds,
+      baths: c.baths,
+      year_built: c.year_built,
+      distance_miles: c.distance_miles,
+      same_subdivision: c.same_subdivision,
+      property_type: c.property_type || report.subject.property_type,
+      lot_sqft: 0,
+      has_pool: false,
+      has_garage: false,
+      garage_count: 0,
+      has_carport: false,
+      has_basement: false,
+      basement_sqft: 0,
+      crosses_major_road: false,
+      days_old: c.sale_date ? Math.floor((Date.now() - new Date(c.sale_date).getTime()) / 86400000) : 0,
+      source: 'manual',
+    }));
+
+    const allRaw = [...report.rawComps.filter((c: Record<string, unknown>) => c.source !== 'manual'), ...manualAsRaw];
+    const sub = report.subject;
+    const filtered = filterComps(sub, allRaw);
+    const adjusted = adjustComps(sub, filtered.qualified);
+    const arvResult = adjusted.length > 0 ? calculateARV(sub, adjusted) : null;
+
+    setReport(prev => prev ? {
+      ...prev,
+      rawComps: allRaw,
+      qualified: filtered.qualified,
+      disqualified: filtered.disqualified,
+      adjusted,
+      arvResult,
+      confidence: arvResult?.confidence ?? 'low',
+    } : prev);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [manualComps, step]);
+
   // ─── Run Full Analysis ────────────────────────────────────────
 
   const updateStep = (idx: number, update: Partial<AnalysisStep>) => {
     setAnalysisSteps(prev => prev.map((s, i) => i === idx ? { ...s, ...update } : s));
   };
 
-  // Helper: fetch with abort controller and 60-second timeout
   const zoriaFetch = async (url: string, body: unknown, signal?: AbortSignal) => {
     const controller = new AbortController();
-    const timeout = setTimeout(() => {
-      console.log(`[DealUW] Timeout: ${url} took >60s, aborting`);
-      controller.abort();
-    }, 60000);
-
-    // If external signal aborts, also abort our controller
-    if (signal) {
-      signal.addEventListener('abort', () => controller.abort());
-    }
-
+    const timeout = setTimeout(() => { controller.abort(); }, 60000);
+    if (signal) signal.addEventListener('abort', () => controller.abort());
     try {
       console.log(`[DealUW] Fetching: ${url}`);
       const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: controller.signal,
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body), signal: controller.signal,
       });
       clearTimeout(timeout);
-      console.log(`[DealUW] Response: ${url} → ${res.status}`);
+      console.log(`[DealUW] Response: ${url} -> ${res.status}`);
       return res;
     } catch (err) {
       clearTimeout(timeout);
@@ -219,13 +359,13 @@ export default function AnalyzePage() {
     setAiAnalysis(null);
     setDataSource(null);
     setLoadingTooLong(false);
+    setArvOverride(null);
+    setManualComps([]);
 
-    // Cancel any previous request
     if (abortRef.current) abortRef.current.abort();
     const abort = new AbortController();
     abortRef.current = abort;
 
-    // Show "taking longer" after 20s
     if (tooLongRef.current) clearTimeout(tooLongRef.current);
     tooLongRef.current = setTimeout(() => setLoadingTooLong(true), 20000);
 
@@ -245,19 +385,15 @@ export default function AnalyzePage() {
     let rawComps: Record<string, unknown>[] = [];
     let source: 'zoria' | 'manual' = 'manual';
     let propertyFound = false;
-    let compsFound = false;
 
     try {
-      // Step 0: Property lookup via Zoria
-      updateStep(0, { status: 'running', detail: 'Looking up property details...' });
-      setLookupStatus('Looking up property details...');
-      console.log('[DealUW] Step 0: Property lookup starting');
+      // Step 0: Property lookup
+      updateStep(0, { status: 'running' });
       try {
         const lookupRes = await zoriaFetch('/api/lookup/property', {
           address: subject.address, city: subject.city, state: subject.state, zip: subject.zip,
         }, abort.signal);
         const lookupData = await lookupRes.json();
-        console.log('[DealUW] Step 0: Property lookup response:', lookupData);
         if (lookupData.available && lookupData.property) {
           const p = lookupData.property;
           currentSubject = {
@@ -289,147 +425,75 @@ export default function AnalyzePage() {
           source = 'zoria';
           propertyFound = true;
           updateStep(0, { status: 'done', detail: `Property found! ${currentSubject.beds}bd/${currentSubject.baths}ba, ${currentSubject.sqft?.toLocaleString()} sqft` });
-          setLookupStatus('Property found! Pulling comps...');
-          console.log('[DealUW] Step 0: Property found:', currentSubject.beds, 'bd/', currentSubject.baths, 'ba/', currentSubject.sqft, 'sqft');
         } else {
-          console.log('[DealUW] Step 0: Property not found, falling back to manual');
           updateStep(0, { status: 'done', detail: 'Property not found. Enter details manually.' });
-          setLookupStatus('Property not found. Enter details manually.');
         }
       } catch (err) {
-        console.error('[DealUW] Step 0: Property lookup error:', err);
         if (abort.signal.aborted) throw err;
-        updateStep(0, { status: 'error', detail: 'Something went wrong. Enter details manually.' });
-        setLookupStatus('Something went wrong. Enter details manually.');
+        updateStep(0, { status: 'error', detail: 'Lookup failed. Enter details manually.' });
       }
 
-      // Step 1: Pull comps via Zoria
-      updateStep(1, { status: 'running', detail: 'Searching for comparable sales...' });
-      setLookupStatus(propertyFound ? 'Searching for comparable sales...' : 'Searching for comps...');
-      console.log('[DealUW] Step 1: Comp lookup starting');
+      // Step 1: Comps
+      updateStep(1, { status: 'running' });
       try {
         const compsRes = await zoriaFetch('/api/lookup/comps', {
-          address: currentSubject.address,
-          city: currentSubject.city,
-          state: currentSubject.state,
-          zip: currentSubject.zip,
+          address: currentSubject.address, city: currentSubject.city,
+          state: currentSubject.state, zip: currentSubject.zip,
           subject_details: currentSubject,
         }, abort.signal);
         const compsData = await compsRes.json();
-        console.log('[DealUW] Step 1: Comps response:', compsData.available, 'count:', compsData.comps?.length);
         if (compsData.available && compsData.comps?.length > 0) {
           rawComps = compsData.comps;
           source = 'zoria';
-          compsFound = true;
           updateStep(1, { status: 'done', detail: `Found ${rawComps.length} comps!` });
-          setLookupStatus(`Found ${rawComps.length} comps!`);
         } else {
-          console.log('[DealUW] Step 1: No comps found');
-          updateStep(1, { status: 'done', detail: 'No comps found automatically. Add comps manually.' });
-          setLookupStatus('No comps found automatically. Add comps manually.');
+          updateStep(1, { status: 'done', detail: 'No comps found. Add comps manually.' });
         }
       } catch (err) {
-        console.error('[DealUW] Step 1: Comp lookup error:', err);
         if (abort.signal.aborted) throw err;
         updateStep(1, { status: 'error', detail: 'Comp search failed. Add comps manually.' });
-        setLookupStatus('Comp search failed. Add comps manually.');
       }
 
-      // If both lookups failed, mark as failed so we can show manual fallback
-      if (!propertyFound && !compsFound) {
+      if (!propertyFound && rawComps.length === 0) {
         setLookupFailed(true);
-        console.log('[DealUW] Both lookups failed — manual fallback mode');
       }
 
       setDataSource(source);
-      console.log('[DealUW] Data source:', source, '| rawComps:', rawComps.length);
 
-      // Step 2: Filter comps
+      // Step 2-4: Filter, adjust, ARV
       updateStep(2, { status: 'running' });
       const filtered = filterComps(currentSubject, rawComps);
-      const qualified = filtered.qualified;
-      const disqualified = filtered.disqualified;
-      console.log('[DealUW] Step 2: Filter comps — qualified:', qualified.length, 'disqualified:', disqualified.length);
-      updateStep(2, { status: 'done', detail: `${qualified.length} qualified, ${disqualified.length} excluded` });
+      updateStep(2, { status: 'done', detail: `${filtered.qualified.length} qualified, ${filtered.disqualified.length} excluded` });
 
-      // Step 3: Adjust comps
       updateStep(3, { status: 'running' });
-      const adjusted = adjustComps(currentSubject, qualified);
-      const totalAdj = adjusted.reduce((s, c) => s + Math.abs(c.total_adjustment), 0);
-      updateStep(3, { status: 'done', detail: `${adjusted.length} comps adjusted, ${money(totalAdj)} total adjustments` });
+      const adjusted = adjustComps(currentSubject, filtered.qualified);
+      updateStep(3, { status: 'done', detail: `${adjusted.length} comps adjusted` });
 
-      // Step 4: Calculate ARV
       updateStep(4, { status: 'running' });
       const arvResult = adjusted.length > 0 ? calculateARV(currentSubject, adjusted) : null;
-      updateStep(4, { status: 'done', detail: arvResult ? `${money(arvResult.arv)} (${arvResult.confidence} confidence)` : 'No comps for ARV' });
+      updateStep(4, { status: 'done', detail: arvResult ? `${money(arvResult.arv)} (${arvResult.confidence})` : 'No comps for ARV' });
 
-      // Step 5: Repair estimate — photos go through Zoria, otherwise algorithmic
+      // Step 5: Repairs
       updateStep(5, { status: 'running' });
       let repairEstimate: RepairEstimate | null = null;
-      if (photos.length > 0) {
-        // Try Zoria photo analysis first
-        try {
-          const repairRes = await zoriaFetch('/api/lookup/repairs', {
-            photos: photos.map(p => ({ base64: p.dataUrl, label: p.label })),
-            property: currentSubject,
-          }, abort.signal);
-          if (repairRes.ok) {
-            repairEstimate = await repairRes.json();
-            updateStep(5, { status: 'done', detail: `${money(repairEstimate?.total_recommended)} (Zoria AI photo)` });
-          } else {
-            throw new Error('Zoria photo analysis failed');
-          }
-        } catch (err) {
-          if (abort.signal.aborted) throw err;
-          // Fallback: try direct Anthropic API
-          try {
-            const fallbackRes = await zoriaFetch('/api/estimate-repairs', {
-              property: currentSubject,
-              photos: photos.map(p => p.dataUrl),
-              mode: 'ai_photo',
-            }, abort.signal);
-            if (fallbackRes.ok) {
-              repairEstimate = await fallbackRes.json();
-              updateStep(5, { status: 'done', detail: `${money(repairEstimate?.total_recommended)} (AI photo fallback)` });
-            } else {
-              throw new Error('Photo fallback failed');
-            }
-          } catch (err2) {
-            if (abort.signal.aborted) throw err2;
-            // Final fallback: algorithmic
-            try {
-              const algoRes = await zoriaFetch('/api/estimate-repairs', {
-                property: currentSubject,
-                mode: 'algorithmic',
-              }, abort.signal);
-              if (algoRes.ok) {
-                repairEstimate = await algoRes.json();
-                updateStep(5, { status: 'done', detail: `${money(repairEstimate?.total_recommended)} (algorithmic fallback)` });
-              }
-            } catch { /* ignore */ }
-            if (!repairEstimate) updateStep(5, { status: 'done', detail: 'Estimate unavailable' });
-          }
+      try {
+        const repairRes = await zoriaFetch('/api/estimate-repairs', {
+          property: currentSubject,
+          photos: photos.length > 0 ? photos.map(p => p.dataUrl) : undefined,
+          mode: photos.length > 0 ? 'ai_photo' : 'algorithmic',
+        }, abort.signal);
+        if (repairRes.ok) {
+          repairEstimate = await repairRes.json();
+          updateStep(5, { status: 'done', detail: `${money(repairEstimate?.total_recommended)}` });
+        } else {
+          updateStep(5, { status: 'done', detail: 'Estimate unavailable' });
         }
-      } else {
-        // No photos — algorithmic estimate
-        try {
-          const repairRes = await zoriaFetch('/api/estimate-repairs', {
-            property: currentSubject,
-            mode: 'algorithmic',
-          }, abort.signal);
-          if (repairRes.ok) {
-            repairEstimate = await repairRes.json();
-            updateStep(5, { status: 'done', detail: `${money(repairEstimate?.total_recommended)} (algorithmic)` });
-          } else {
-            updateStep(5, { status: 'done', detail: 'Estimate unavailable' });
-          }
-        } catch (err) {
-          if (abort.signal.aborted) throw err;
-          updateStep(5, { status: 'done', detail: 'Estimate failed' });
-        }
+      } catch (err) {
+        if (abort.signal.aborted) throw err;
+        updateStep(5, { status: 'done', detail: 'Estimate failed' });
       }
 
-      // Step 6: Offer strategies
+      // Step 6: Offers (computed reactively via liveOffers, but also store in report for compatibility)
       updateStep(6, { status: 'running' });
       let allOffers: AllOffers | null = null;
       let negotiationGuide: NegotiationGuide | null = null;
@@ -437,113 +501,43 @@ export default function AnalyzePage() {
       const repairs = repairEstimate?.total_recommended ?? 0;
       if (arv > 0) {
         const { calculateAllOffers, generateNegotiationGuide } = await import('@/lib/offerCalculator');
-        allOffers = calculateAllOffers({
-          arv,
-          repairs,
-          asking_price: currentSubject.asking_price,
-          property: currentSubject,
-          market_rent: currentSubject.monthly_rent,
-        });
+        allOffers = calculateAllOffers({ arv, repairs, asking_price: currentSubject.asking_price, property: currentSubject, market_rent: currentSubject.monthly_rent });
         negotiationGuide = generateNegotiationGuide(allOffers, currentSubject.asking_price);
         updateStep(6, { status: 'done', detail: `Best: ${allOffers.best_strategy}` });
       } else {
-        updateStep(6, { status: 'done', detail: 'Need ARV for offers' });
+        updateStep(6, { status: 'done', detail: 'Add comps or override ARV' });
       }
 
-      // Step 7: Generate report
+      // Set estimated rent from offer calc
+      if (allOffers?.owner_finance) {
+        setOfEstimatedRent(allOffers.owner_finance.market_rent);
+      }
+
+      // Step 7: Report
       updateStep(7, { status: 'running' });
-      const confidence = arvResult?.confidence ?? 'low';
       const fullReport: FullReport = {
-        subject: currentSubject,
-        photos,
-        rawComps,
-        qualified,
-        disqualified,
-        adjusted,
-        arvResult,
-        repairEstimate,
-        allOffers,
-        negotiationGuide,
+        subject: currentSubject, photos, rawComps,
+        qualified: filtered.qualified, disqualified: filtered.disqualified,
+        adjusted, arvResult, repairEstimate, allOffers, negotiationGuide,
         generatedAt: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
-        confidence,
+        confidence: arvResult?.confidence ?? 'low',
       };
       setReport(fullReport);
       updateStep(7, { status: 'done', detail: 'Complete' });
 
-      // Clear timers
       if (tooLongRef.current) clearTimeout(tooLongRef.current);
       setLoadingTooLong(false);
-
-      // Transition to report
       setTimeout(() => setStep('report'), 600);
     } catch (err) {
       console.error('[DealUW] runAnalysis error:', err);
       if (tooLongRef.current) clearTimeout(tooLongRef.current);
       if (abort.signal.aborted) {
         setAnalysisSteps(prev => prev.map(s => s.status === 'running' ? { ...s, status: 'error', detail: 'Cancelled' } : s));
-        setLookupStatus('Analysis cancelled.');
       } else {
-        const msg = err instanceof Error ? err.message : 'Analysis failed';
-        setAnalysisSteps(prev => prev.map(s => s.status === 'running' ? { ...s, status: 'error', detail: msg } : s));
-        setLookupStatus('Something went wrong. Enter details manually.');
+        setAnalysisSteps(prev => prev.map(s => s.status === 'running' ? { ...s, status: 'error', detail: 'Failed' } : s));
         setLookupFailed(true);
       }
     }
-  };
-
-  // ─── Re-pull from Zoria ─────────────────────────────────────────
-
-  const repullProperty = async () => {
-    if (!report) return;
-    setDataSource(null);
-    try {
-      const res = await fetch('/api/lookup/property', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ address: report.subject.address, city: report.subject.city, state: report.subject.state, zip: report.subject.zip }),
-      });
-      const data = await res.json();
-      if (data.available && data.property) {
-        const p = data.property;
-        const updated = { ...report.subject, ...p };
-        setSubject(updated);
-        setReport({ ...report, subject: updated });
-        setDataSource('zoria');
-      }
-    } catch { /* ignore */ }
-  };
-
-  const repullComps = async () => {
-    if (!report) return;
-    try {
-      const res = await fetch('/api/lookup/comps', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          address: report.subject.address,
-          city: report.subject.city,
-          state: report.subject.state,
-          zip: report.subject.zip,
-          subject_details: report.subject,
-        }),
-      });
-      const data = await res.json();
-      if (data.available && data.comps?.length > 0) {
-        const newFiltered = filterComps(report.subject, data.comps);
-        const newAdjusted = adjustComps(report.subject, newFiltered.qualified);
-        const newArv = newAdjusted.length > 0 ? calculateARV(report.subject, newAdjusted) : null;
-        setReport({
-          ...report,
-          rawComps: data.comps,
-          qualified: newFiltered.qualified,
-          disqualified: newFiltered.disqualified,
-          adjusted: newAdjusted,
-          arvResult: newArv,
-          confidence: newArv?.confidence ?? 'low',
-        });
-        setDataSource('zoria');
-      }
-    } catch { /* ignore */ }
   };
 
   // ─── Save to Pipeline ─────────────────────────────────────────
@@ -553,61 +547,86 @@ export default function AnalyzePage() {
     setSaving(true);
     try {
       const r = report;
-      await fetch('/api/deals', {
+      const arv = effectiveArv;
+      const repairs = effectiveRepairs;
+      const mao = liveOffers?.mao ?? 0;
+      const res = await fetch('/api/deals', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...r.subject,
-          arv_raw: r.arvResult?.arv,
-          arv_adjusted: r.arvResult?.arv,
-          repair_estimate: r.repairEstimate?.total_recommended,
-          mao: r.allOffers?.cash.mao,
-          assignment_fee: r.allOffers?.cash.assignment_fee.target,
-          recommendation: r.allOffers?.best_strategy === 'Pass' ? 'pass' : r.allOffers?.cash.works ? 'go' : 'negotiate',
+          arv_raw: arv,
+          arv_adjusted: arv,
+          repair_estimate: repairs,
+          mao,
+          assignment_fee: liveOffers?.cashAssignTgt ?? 0,
+          recommendation: liveOffers ? (liveOffers.best === 'Pass' ? 'pass' : liveOffers.cashWorks ? 'go' : 'negotiate') : 'negotiate',
           confidence: r.confidence,
           status: 'analyzing',
-          comps_data: JSON.stringify(r.adjusted),
-          repair_breakdown: JSON.stringify(r.repairEstimate),
-          adjustments_applied: JSON.stringify(r.arvResult?.adjustments_summary),
+          notes: r.subject.seller_notes || null,
         }),
       });
-      setSaving(false);
-      router.push('/pipeline');
+      if (res.ok) {
+        setToast({ message: 'Saved to pipeline!', type: 'success' });
+        setSaving(false);
+        setTimeout(() => router.push('/pipeline'), 1000);
+      } else {
+        throw new Error('API failed');
+      }
     } catch {
+      // Fallback: save to localStorage
+      try {
+        const saved = JSON.parse(localStorage.getItem('dealuw_local_deals') || '[]');
+        saved.push({ ...report.subject, arv: effectiveArv, repairs: effectiveRepairs, savedAt: new Date().toISOString() });
+        localStorage.setItem('dealuw_local_deals', JSON.stringify(saved));
+        setToast({ message: 'Saved locally (API unavailable)', type: 'info' });
+      } catch {
+        setToast({ message: 'Save failed', type: 'error' });
+      }
       setSaving(false);
     }
   };
 
+  // ─── Export PDF ───────────────────────────────────────────────
+
+  const exportPDF = () => {
+    setToast({ message: 'Use your browser\'s Save as PDF option', type: 'info' });
+    setTimeout(() => window.print(), 300);
+  };
+
   // ─── AI Second Opinion ────────────────────────────────────────
 
-  const runAiOpinion = async () => {
-    if (!report || !report.arvResult || !report.allOffers) return;
-    setAiLoading(true);
-    try {
-      const r = report;
-      const res = await fetch('/api/ai-analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          subject: r.subject,
-          compsUsed: r.adjusted.map(c => ({
-            address: c.address, sale_price: c.sale_price, adjusted_price: c.adjusted_price,
-            days_old: c.days_old, sqft: c.sqft, distance_miles: c.distance_miles, adjustments: c.adjustments,
-          })),
-          compsDisqualified: r.disqualified.map((c: Record<string, unknown>) => ({
-            address: c.address, sale_price: c.sale_price, disqualified_reasons: c.disqualified_reasons,
-          })),
-          arvResult: r.arvResult,
-          maoResult: { mao: r.allOffers!.cash.mao, breakdown: { asking_price: r.subject.asking_price, spread: r.allOffers!.cash.spread } },
-          repairEstimate: r.repairEstimate?.total_recommended ?? 0,
-          repairBreakdown: r.repairEstimate?.line_items.map(i => `${i.category}: ${money(i.recommended)}`).join(', ') ?? '',
-        }),
-      });
-      if (res.ok) {
-        setAiAnalysis(await res.json());
-      }
-    } catch { /* ignore */ }
-    setAiLoading(false);
+  const runAiOpinion = () => {
+    setToast({ message: 'Coming soon -- AI analysis will review your numbers', type: 'info' });
+  };
+
+  // ─── New Analysis ─────────────────────────────────────────────
+
+  const resetAll = () => {
+    setSubject(defaultSubject);
+    setPhotos([]);
+    setReport(null);
+    setAiAnalysis(null);
+    setManualComps([]);
+    setArvOverride(null);
+    setShowCompForm(false);
+    setLookupStatus(null);
+    setLookupFailed(false);
+    setOfInterestRate(6);
+    setOfTermYears(30);
+    setOfEstimatedRent(1200);
+    setNovHoldingCosts(6000);
+    setStep('input');
+    window.scrollTo(0, 0);
+  };
+
+  // ─── Editable field helper ────────────────────────────────────
+
+  const updateReportSubject = (field: string, value: unknown) => {
+    if (!report) return;
+    const updated = { ...report.subject, [field]: value };
+    setSubject(updated);
+    setReport({ ...report, subject: updated });
   };
 
   // ═════════════════════════════════════════════════════════════════
@@ -626,12 +645,11 @@ export default function AnalyzePage() {
             <p className="text-sm text-muted mb-8">Enter property details and run a full CMA with offer strategies.</p>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-              {/* Left: Address */}
+              {/* Address */}
               <div className="rounded-xl border border-border bg-card p-6">
                 <h3 className="text-sm font-semibold text-accent mb-4">Property Address</h3>
                 <input
-                  type="text"
-                  placeholder="Enter property address..."
+                  type="text" placeholder="Enter property address..."
                   value={subject.address}
                   onChange={e => setSubject(s => ({ ...s, address: e.target.value }))}
                   className="w-full rounded-xl border border-border bg-background px-5 py-4 text-lg text-foreground placeholder:text-muted/50 focus:border-accent focus:outline-none transition-colors mb-3"
@@ -643,7 +661,7 @@ export default function AnalyzePage() {
                 </div>
               </div>
 
-              {/* Right: Photos */}
+              {/* Photos */}
               <div className="rounded-xl border border-border bg-card p-6">
                 <h3 className="text-sm font-semibold text-accent mb-4">Seller Photos <span className="text-muted font-normal">(optional)</span></h3>
                 <div
@@ -655,7 +673,7 @@ export default function AnalyzePage() {
                 >
                   <input id="photo-input" type="file" accept="image/jpeg,image/png,image/heic,image/heif" multiple className="hidden" onChange={e => { if (e.target.files) handlePhotoUpload(e.target.files); e.target.value = ''; }} />
                   <p className="text-sm text-muted">Drop photos or click to browse</p>
-                  <p className="text-xs text-muted/50 mt-1">JPG, PNG, HEIC &middot; Max 10 &middot; AI analyzes visible repairs</p>
+                  <p className="text-xs text-muted/50 mt-1">JPG, PNG, HEIC &middot; Max 10</p>
                 </div>
                 {photos.length > 0 && (
                   <div className="mt-3 flex flex-wrap gap-2">
@@ -663,10 +681,6 @@ export default function AnalyzePage() {
                       <div key={i} className="relative group">
                         <img src={p.dataUrl} alt={p.name} className="w-16 h-16 object-cover rounded-lg border border-border" />
                         <button onClick={e => { e.stopPropagation(); setPhotos(prev => prev.filter((_, j) => j !== i)); }} className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-pass text-white text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">&times;</button>
-                        <select value={p.label} onChange={e => setPhotos(prev => prev.map((ph, j) => j === i ? { ...ph, label: e.target.value } : ph))} onClick={e => e.stopPropagation()} className="absolute bottom-0 left-0 right-0 bg-black/70 text-[8px] text-white border-0 py-0 px-0.5 rounded-b-lg">
-                          <option value="">Label</option>
-                          {['Kitchen', 'Bathroom', 'Exterior', 'Roof', 'Living Room', 'Bedroom', 'Basement', 'Yard'].map(l => <option key={l} value={l}>{l}</option>)}
-                        </select>
                       </div>
                     ))}
                     <span className="text-[10px] text-muted self-end">{photos.length}/10</span>
@@ -675,101 +689,47 @@ export default function AnalyzePage() {
               </div>
             </div>
 
-            {/* Property Details (auto-filled from Zoria or manual entry) */}
+            {/* Property Details */}
             <div className="rounded-xl border border-border bg-card p-6 mb-6">
               <h3 className="text-sm font-semibold text-accent mb-4">
                 Property Details
                 {dataSource === 'zoria' && <span className="ml-2 rounded-full bg-accent/10 text-accent px-2 py-0.5 text-xs font-normal">Auto-filled from Zoria</span>}
               </h3>
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
-                <div>
-                  <label className="block text-xs text-muted mb-1">Beds</label>
-                  <input type="number" placeholder="0" value={subject.beds ?? ''} onChange={e => setSubject(s => ({ ...s, beds: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" />
-                </div>
-                <div>
-                  <label className="block text-xs text-muted mb-1">Baths</label>
-                  <input type="number" step="0.5" placeholder="0" value={subject.baths ?? ''} onChange={e => setSubject(s => ({ ...s, baths: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" />
-                </div>
-                <div>
-                  <label className="block text-xs text-muted mb-1">Sqft</label>
-                  <input type="number" placeholder="0" value={subject.sqft ?? ''} onChange={e => setSubject(s => ({ ...s, sqft: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" style={mono} />
-                </div>
-                <div>
-                  <label className="block text-xs text-muted mb-1">Lot Sqft</label>
-                  <input type="number" placeholder="0" value={subject.lot_sqft ?? ''} onChange={e => setSubject(s => ({ ...s, lot_sqft: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" style={mono} />
-                </div>
+                <div><label className="block text-xs text-muted mb-1">Beds</label><input type="number" placeholder="0" value={subject.beds ?? ''} onChange={e => setSubject(s => ({ ...s, beds: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" /></div>
+                <div><label className="block text-xs text-muted mb-1">Baths</label><input type="number" step="0.5" placeholder="0" value={subject.baths ?? ''} onChange={e => setSubject(s => ({ ...s, baths: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" /></div>
+                <div><label className="block text-xs text-muted mb-1">Sqft</label><input type="number" placeholder="0" value={subject.sqft ?? ''} onChange={e => setSubject(s => ({ ...s, sqft: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" style={mono} /></div>
+                <div><label className="block text-xs text-muted mb-1">Lot Sqft</label><input type="number" placeholder="0" value={subject.lot_sqft ?? ''} onChange={e => setSubject(s => ({ ...s, lot_sqft: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" style={mono} /></div>
               </div>
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                <div>
-                  <label className="block text-xs text-muted mb-1">Year Built</label>
-                  <input type="number" placeholder="1990" value={subject.year_built ?? ''} onChange={e => setSubject(s => ({ ...s, year_built: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" />
-                </div>
-                <div>
-                  <label className="block text-xs text-muted mb-1">Property Type</label>
-                  <select value={subject.property_type} onChange={e => setSubject(s => ({ ...s, property_type: e.target.value }))} className="input-std w-full">
-                    {PROPERTY_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-muted mb-1">Condition</label>
-                  <select value={subject.condition} onChange={e => setSubject(s => ({ ...s, condition: e.target.value }))} className="input-std w-full">
-                    {['excellent', 'good', 'fair', 'poor'].map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-muted mb-1">Traffic/Commercial</label>
-                  <select value={subject.traffic_commercial} onChange={e => setSubject(s => ({ ...s, traffic_commercial: e.target.value }))} className="input-std w-full">
-                    {['none', 'siding', 'backing', 'fronting'].map(o => <option key={o} value={o}>{o}</option>)}
-                  </select>
-                </div>
+                <div><label className="block text-xs text-muted mb-1">Year Built</label><input type="number" placeholder="1990" value={subject.year_built ?? ''} onChange={e => setSubject(s => ({ ...s, year_built: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" /></div>
+                <div><label className="block text-xs text-muted mb-1">Property Type</label><select value={subject.property_type} onChange={e => setSubject(s => ({ ...s, property_type: e.target.value }))} className="input-std w-full">{PROPERTY_TYPES.map(t => <option key={t} value={t}>{t}</option>)}</select></div>
+                <div><label className="block text-xs text-muted mb-1">Condition</label><select value={subject.condition} onChange={e => setSubject(s => ({ ...s, condition: e.target.value }))} className="input-std w-full">{['excellent', 'good', 'fair', 'poor'].map(c => <option key={c} value={c}>{c}</option>)}</select></div>
+                <div><label className="block text-xs text-muted mb-1">Traffic/Commercial</label><select value={subject.traffic_commercial} onChange={e => setSubject(s => ({ ...s, traffic_commercial: e.target.value }))} className="input-std w-full">{['none', 'siding', 'backing', 'fronting'].map(o => <option key={o} value={o}>{o}</option>)}</select></div>
               </div>
               <div className="flex flex-wrap gap-4 mt-3">
-                <label className="flex items-center gap-2 text-xs text-muted cursor-pointer">
-                  <input type="checkbox" checked={subject.has_pool} onChange={e => setSubject(s => ({ ...s, has_pool: e.target.checked }))} className="accent-[#3AADE8]" /> Pool
-                </label>
-                <label className="flex items-center gap-2 text-xs text-muted cursor-pointer">
-                  <input type="checkbox" checked={subject.has_garage} onChange={e => setSubject(s => ({ ...s, has_garage: e.target.checked }))} className="accent-[#3AADE8]" /> Garage
-                </label>
-                <label className="flex items-center gap-2 text-xs text-muted cursor-pointer">
-                  <input type="checkbox" checked={subject.has_basement} onChange={e => setSubject(s => ({ ...s, has_basement: e.target.checked }))} className="accent-[#3AADE8]" /> Basement
-                </label>
-                <label className="flex items-center gap-2 text-xs text-muted cursor-pointer">
-                  <input type="checkbox" checked={subject.has_carport} onChange={e => setSubject(s => ({ ...s, has_carport: e.target.checked }))} className="accent-[#3AADE8]" /> Carport
-                </label>
+                <label className="flex items-center gap-2 text-xs text-muted cursor-pointer"><input type="checkbox" checked={subject.has_pool} onChange={e => setSubject(s => ({ ...s, has_pool: e.target.checked }))} className="accent-[#3AADE8]" /> Pool</label>
+                <label className="flex items-center gap-2 text-xs text-muted cursor-pointer"><input type="checkbox" checked={subject.has_garage} onChange={e => setSubject(s => ({ ...s, has_garage: e.target.checked }))} className="accent-[#3AADE8]" /> Garage</label>
+                <label className="flex items-center gap-2 text-xs text-muted cursor-pointer"><input type="checkbox" checked={subject.has_basement} onChange={e => setSubject(s => ({ ...s, has_basement: e.target.checked }))} className="accent-[#3AADE8]" /> Basement</label>
+                <label className="flex items-center gap-2 text-xs text-muted cursor-pointer"><input type="checkbox" checked={subject.has_carport} onChange={e => setSubject(s => ({ ...s, has_carport: e.target.checked }))} className="accent-[#3AADE8]" /> Carport</label>
               </div>
             </div>
 
             {/* Seller Info */}
             <div className="rounded-xl border border-border bg-card p-6 mb-6">
-              <h3 className="text-sm font-semibold text-accent mb-4">Seller Info <span className="text-muted font-normal">(optional — from your conversation)</span></h3>
+              <h3 className="text-sm font-semibold text-accent mb-4">Seller Info <span className="text-muted font-normal">(optional)</span></h3>
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
-                <div>
-                  <label className="block text-xs text-muted mb-1">Asking Price</label>
-                  <input type="number" placeholder="$0" value={subject.asking_price ?? ''} onChange={e => setSubject(s => ({ ...s, asking_price: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" style={mono} />
-                </div>
-                <div>
-                  <label className="block text-xs text-muted mb-1">Motivation</label>
-                  <select value={subject.seller_motivation} onChange={e => setSubject(s => ({ ...s, seller_motivation: e.target.value }))} className="input-std w-full">
-                    {MOTIVATIONS.map(m => <option key={m} value={m}>{m || 'Select...'}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-muted mb-1">Timeline</label>
-                  <select value={subject.seller_timeline} onChange={e => setSubject(s => ({ ...s, seller_timeline: e.target.value }))} className="input-std w-full">
-                    {TIMELINES.map(t => <option key={t} value={t}>{t || 'Select...'}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs text-muted mb-1">Monthly Rent (if rented)</label>
-                  <input type="number" placeholder="$0" value={subject.monthly_rent ?? ''} onChange={e => setSubject(s => ({ ...s, monthly_rent: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" style={mono} />
-                </div>
+                <div><label className="block text-xs text-muted mb-1">Asking Price</label><input type="number" placeholder="$0" value={subject.asking_price ?? ''} onChange={e => setSubject(s => ({ ...s, asking_price: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" style={mono} /></div>
+                <div><label className="block text-xs text-muted mb-1">Motivation</label><select value={subject.seller_motivation} onChange={e => setSubject(s => ({ ...s, seller_motivation: e.target.value }))} className="input-std w-full">{MOTIVATIONS.map(m => <option key={m} value={m}>{m || 'Select...'}</option>)}</select></div>
+                <div><label className="block text-xs text-muted mb-1">Timeline</label><select value={subject.seller_timeline} onChange={e => setSubject(s => ({ ...s, seller_timeline: e.target.value }))} className="input-std w-full">{TIMELINES.map(t => <option key={t} value={t}>{t || 'Select...'}</option>)}</select></div>
+                <div><label className="block text-xs text-muted mb-1">Monthly Rent</label><input type="number" placeholder="$0" value={subject.monthly_rent ?? ''} onChange={e => setSubject(s => ({ ...s, monthly_rent: e.target.value ? Number(e.target.value) : null }))} className="input-std w-full" style={mono} /></div>
               </div>
               <textarea placeholder="Notes from seller conversation..." value={subject.seller_notes} onChange={e => setSubject(s => ({ ...s, seller_notes: e.target.value }))} rows={2} className="input-std w-full resize-none" />
             </div>
 
-            {/* Lookup Status Message */}
-            {lookupStatus && step === 'input' && (
-              <div className={`rounded-xl border px-5 py-3 text-sm ${lookupFailed ? 'border-negotiate/30 bg-negotiate/5 text-negotiate' : 'border-accent/30 bg-accent/5 text-accent'}`}>
+            {/* Status */}
+            {lookupStatus && (
+              <div className={`rounded-xl border px-5 py-3 text-sm mb-4 ${lookupFailed ? 'border-negotiate/30 bg-negotiate/5 text-negotiate' : 'border-accent/30 bg-accent/5 text-accent'}`}>
                 {lookupStatus}
               </div>
             )}
@@ -791,16 +751,14 @@ export default function AnalyzePage() {
             <div className="text-center mb-10">
               <h2 className="text-xl font-bold text-foreground mb-2">Analyzing Deal...</h2>
               <p className="text-sm text-muted">{subject.address}</p>
-              <p className="text-xs text-muted/50 mt-2">Zoria is searching the web for data. This may take 15-30 seconds.</p>
+              <p className="text-xs text-muted/50 mt-2">This may take 15-30 seconds.</p>
             </div>
             <div className="space-y-4">
               {analysisSteps.map((s, i) => (
                 <div key={i} className={`flex items-start gap-3 transition-opacity duration-300 ${s.status === 'pending' ? 'opacity-30' : 'opacity-100'}`}>
                   <div className="w-6 h-6 flex-shrink-0 flex items-center justify-center mt-0.5">
                     {s.status === 'done' && <span className="text-go text-lg">&#10003;</span>}
-                    {s.status === 'running' && (
-                      <svg className="animate-spin h-5 w-5 text-accent" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
-                    )}
+                    {s.status === 'running' && <svg className="animate-spin h-5 w-5 text-accent" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>}
                     {s.status === 'error' && <span className="text-pass text-lg">&#10007;</span>}
                     {s.status === 'pending' && <span className="w-2 h-2 rounded-full bg-border" />}
                   </div>
@@ -811,29 +769,20 @@ export default function AnalyzePage() {
                 </div>
               ))}
             </div>
-            {/* Manual fallback — shown when lookups failed */}
             {lookupFailed && (
               <div className="mt-8 text-center animate-fadeIn">
-                <div className="rounded-xl border border-negotiate/30 bg-negotiate/5 px-5 py-3 mb-4 inline-block">
-                  <p className="text-sm text-negotiate">Auto-lookup couldn&apos;t find this property. Enter details manually.</p>
-                </div>
-                <br />
-                <button
-                  onClick={() => { if (abortRef.current) abortRef.current.abort(); setStep('input'); setLookupStatus('Auto-lookup couldn\'t find this property. Enter details manually.'); setLookupFailed(true); }}
-                  className="rounded-lg bg-accent px-6 py-2.5 text-sm font-semibold text-white hover:bg-accent/80 transition-colors"
-                >
+                <p className="text-sm text-negotiate mb-3">Auto-lookup couldn&apos;t find this property.</p>
+                <button onClick={() => { if (abortRef.current) abortRef.current.abort(); setStep('input'); setLookupStatus('Enter details manually.'); setLookupFailed(true); }}
+                  className="rounded-lg bg-accent px-6 py-2.5 text-sm font-semibold text-white hover:bg-accent/80 transition-colors">
                   Enter Details Manually
                 </button>
               </div>
             )}
-
             {loadingTooLong && !lookupFailed && (
               <div className="mt-8 text-center animate-fadeIn">
                 <p className="text-xs text-negotiate mb-3">Taking longer than expected...</p>
-                <button
-                  onClick={() => { if (abortRef.current) abortRef.current.abort(); setStep('input'); setLoadingTooLong(false); setLookupStatus('Lookup timed out. Enter details manually.'); setLookupFailed(true); }}
-                  className="rounded-lg border border-border px-4 py-2 text-xs text-muted hover:text-foreground transition-colors"
-                >
+                <button onClick={() => { if (abortRef.current) abortRef.current.abort(); setStep('input'); setLoadingTooLong(false); setLookupFailed(true); }}
+                  className="rounded-lg border border-border px-4 py-2 text-xs text-muted hover:text-foreground transition-colors">
                   Switch to manual entry
                 </button>
               </div>
@@ -845,46 +794,31 @@ export default function AnalyzePage() {
         {step === 'report' && report && (
           <div className="animate-fadeIn">
             {/* Report Header */}
-            <div className="rounded-xl border border-accent/20 bg-card p-6 mb-8">
+            <div className="rounded-xl border border-accent/20 bg-card p-6 mb-8 print:border-gray-300">
               <div className="flex items-start justify-between">
                 <div>
                   <h1 className="text-xs font-bold tracking-widest text-accent mb-1" style={{ fontFamily: "'Cinzel', serif" }}>DealUW Analysis Report</h1>
                   <p className="text-xl font-bold text-foreground">{report.subject.address}</p>
                   <p className="text-sm text-muted">{report.subject.city}{report.subject.state ? `, ${report.subject.state}` : ''} {report.subject.zip}</p>
                   <p className="text-xs text-muted mt-1">Generated: {report.generatedAt}</p>
-                  {dataSource && (
-                    <p className="text-xs mt-2">
-                      <span className={`rounded-full px-2 py-0.5 ${dataSource === 'zoria' ? 'bg-accent/10 text-accent' : 'bg-border text-muted'}`}>
-                        {dataSource === 'zoria' ? 'Data: Zoria (AI-powered)' : 'Data: Manual entry'}
-                      </span>
-                    </p>
-                  )}
                 </div>
                 <ConfidenceBadge level={report.confidence} />
               </div>
             </div>
 
-            {/* ═══ SECTION 1: Property Overview ═══ */}
-            <div className="flex items-center justify-between mb-4 mt-2">
-              <SectionHeader title="Property Overview" />
-              <button onClick={repullProperty} className="text-[11px] text-accent/60 hover:text-accent transition-colors flex items-center gap-1">
-                <span>&#8635;</span> Re-pull from Zoria
-              </button>
-            </div>
+            {/* ═══ SECTION 1: Property Overview (editable) ═══ */}
+            <SectionHeader title="Property Overview" />
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
               <div className="rounded-xl border border-border bg-card p-5">
                 <div className="space-y-2 text-sm">
-                  <DataRow label="Address" value={report.subject.address} />
-                  <DataRow label="Location" value={`${report.subject.city || '—'}, ${report.subject.state || '—'} ${report.subject.zip || ''}`} />
-                  <DataRow label="Beds / Baths" value={`${report.subject.beds ?? '—'} / ${report.subject.baths ?? '—'}`} />
-                  <DataRow label="Square Feet" value={report.subject.sqft?.toLocaleString() ?? '—'} mono />
-                  <DataRow label="Lot Sqft" value={report.subject.lot_sqft?.toLocaleString() ?? '—'} mono />
-                  <DataRow label="Year Built" value={String(report.subject.year_built ?? '—')} />
-                  <DataRow label="Type" value={report.subject.property_type} />
-                  <DataRow label="Condition" value={report.subject.condition} />
-                  {report.subject.has_pool && <DataRow label="Pool" value="Yes" />}
-                  {report.subject.has_garage && <DataRow label="Garage" value={`${report.subject.garage_count} bay${report.subject.garage_count !== 1 ? 's' : ''}`} />}
-                  {report.subject.has_basement && <DataRow label="Basement" value={`${report.subject.basement_sqft} sqft (valued at 50%)`} />}
+                  <EditableRow label="Address" field="address" value={report.subject.address} editing={editingField} setEditing={setEditingField} onSave={updateReportSubject} />
+                  <EditableRow label="Beds" field="beds" value={report.subject.beds} editing={editingField} setEditing={setEditingField} onSave={updateReportSubject} type="number" />
+                  <EditableRow label="Baths" field="baths" value={report.subject.baths} editing={editingField} setEditing={setEditingField} onSave={updateReportSubject} type="number" step="0.5" />
+                  <EditableRow label="Square Feet" field="sqft" value={report.subject.sqft} editing={editingField} setEditing={setEditingField} onSave={updateReportSubject} type="number" />
+                  <EditableRow label="Lot Sqft" field="lot_sqft" value={report.subject.lot_sqft} editing={editingField} setEditing={setEditingField} onSave={updateReportSubject} type="number" />
+                  <EditableRow label="Year Built" field="year_built" value={report.subject.year_built} editing={editingField} setEditing={setEditingField} onSave={updateReportSubject} type="number" />
+                  <EditableRow label="Type" field="property_type" value={report.subject.property_type} editing={editingField} setEditing={setEditingField} onSave={updateReportSubject} options={PROPERTY_TYPES} />
+                  <EditableRow label="Condition" field="condition" value={report.subject.condition} editing={editingField} setEditing={setEditingField} onSave={updateReportSubject} options={['excellent', 'good', 'fair', 'poor']} />
                 </div>
               </div>
               <div className="rounded-xl border border-border bg-card p-5">
@@ -897,23 +831,18 @@ export default function AnalyzePage() {
                   </div>
                 )}
                 <div className="space-y-2 text-sm">
-                  {report.subject.tax_assessed_value && <DataRow label="Tax Assessed" value={money(report.subject.tax_assessed_value)} mono />}
-                  {report.subject.last_sale_price && <DataRow label="Last Sale" value={`${money(report.subject.last_sale_price)} on ${report.subject.last_sale_date || '—'}`} mono />}
-                  <DataRow label="Asking Price" value={report.subject.asking_price ? money(report.subject.asking_price) : 'Not disclosed'} mono />
+                  {report.subject.tax_assessed_value != null && <DataRow label="Tax Assessed" value={money(report.subject.tax_assessed_value)} mono />}
+                  {report.subject.last_sale_price != null && <DataRow label="Last Sale" value={`${money(report.subject.last_sale_price)} on ${report.subject.last_sale_date || '--'}`} mono />}
+                  <EditableRow label="Asking Price" field="asking_price" value={report.subject.asking_price} editing={editingField} setEditing={setEditingField} onSave={updateReportSubject} type="number" />
                   {report.subject.seller_motivation && <DataRow label="Motivation" value={report.subject.seller_motivation} />}
                   {report.subject.seller_timeline && <DataRow label="Timeline" value={report.subject.seller_timeline} />}
-                  {report.subject.monthly_rent && <DataRow label="Current Rent" value={`${money(report.subject.monthly_rent)}/mo`} mono />}
+                  {report.subject.monthly_rent != null && <DataRow label="Current Rent" value={`${money(report.subject.monthly_rent)}/mo`} mono />}
                 </div>
               </div>
             </div>
 
             {/* ═══ SECTION 2: Comparable Sales ═══ */}
-            <div className="flex items-center justify-between mb-4 mt-2">
-              <SectionHeader title="Comparable Sales Analysis" badge={`${report.qualified.length + report.disqualified.length} found`} />
-              <button onClick={repullComps} className="text-[11px] text-accent/60 hover:text-accent transition-colors flex items-center gap-1">
-                <span>&#8635;</span> Re-pull from Zoria
-              </button>
-            </div>
+            <SectionHeader title="Comparable Sales Analysis" badge={`${report.adjusted.length} qualified`} />
 
             {/* Summary bar */}
             <div className="rounded-lg border border-border bg-card/50 px-4 py-2.5 mb-4 flex items-center gap-4 text-xs text-muted flex-wrap">
@@ -925,13 +854,15 @@ export default function AnalyzePage() {
             </div>
 
             {/* Comp cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-              {report.adjusted.slice(0, 6).map((comp, i) => (
-                <CompCard key={i} comp={comp} subject={report.subject} />
-              ))}
-            </div>
+            {report.adjusted.length > 0 && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                {report.adjusted.slice(0, 6).map((comp, i) => (
+                  <CompCard key={i} comp={comp} />
+                ))}
+              </div>
+            )}
 
-            {/* Disqualified comps */}
+            {/* DQ comps */}
             {report.disqualified.length > 0 && (
               <div className="mb-4">
                 <button onClick={() => setShowDqComps(!showDqComps)} className="text-xs text-muted hover:text-foreground transition-colors">
@@ -951,27 +882,89 @@ export default function AnalyzePage() {
               </div>
             )}
 
-            {/* ARV Result */}
-            {report.arvResult && (
-              <div className="rounded-xl border border-gold/30 bg-card p-6 mb-8 text-center">
-                <p className="text-xs text-muted mb-1">After Repair Value (ARV)</p>
-                <p className="text-4xl font-black text-gold mb-2" style={mono}>{money(report.arvResult.arv)}</p>
-                <p className="text-sm text-muted mb-3">{report.arvResult.method}</p>
-                <ConfidenceBadge level={report.arvResult.confidence} />
-                <p className="text-xs text-muted mt-2 max-w-lg mx-auto">{report.arvResult.confidence_reasoning}</p>
+            {/* Manual comp entry */}
+            <div className="mb-4">
+              {!showCompForm && manualComps.length < 10 && (
+                <button onClick={() => setShowCompForm(true)} className="rounded-lg border border-accent/30 bg-accent/5 px-4 py-2 text-xs text-accent hover:bg-accent/10 transition-colors">
+                  + Add Comp Manually
+                </button>
+              )}
+              {showCompForm && (
+                <div className="rounded-xl border border-accent/30 bg-card p-4 mt-2 animate-fadeIn">
+                  <p className="text-xs font-semibold text-accent mb-3">Add Comparable Sale</p>
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-2">
+                    <div className="lg:col-span-2"><input placeholder="Address" value={compDraft.address} onChange={e => setCompDraft(d => ({ ...d, address: e.target.value }))} className="input-std w-full text-xs" /></div>
+                    <div><input type="number" placeholder="Sale Price" value={compDraft.sale_price || ''} onChange={e => setCompDraft(d => ({ ...d, sale_price: Number(e.target.value) }))} className="input-std w-full text-xs" /></div>
+                    <div><input type="date" value={compDraft.sale_date} onChange={e => setCompDraft(d => ({ ...d, sale_date: e.target.value }))} className="input-std w-full text-xs" /></div>
+                  </div>
+                  <div className="grid grid-cols-2 lg:grid-cols-5 gap-2 mb-2">
+                    <div><label className="text-[10px] text-muted">Sqft</label><input type="number" value={compDraft.sqft || ''} onChange={e => setCompDraft(d => ({ ...d, sqft: Number(e.target.value) }))} className="input-std w-full text-xs" /></div>
+                    <div><label className="text-[10px] text-muted">Beds</label><input type="number" value={compDraft.beds} onChange={e => setCompDraft(d => ({ ...d, beds: Number(e.target.value) }))} className="input-std w-full text-xs" /></div>
+                    <div><label className="text-[10px] text-muted">Baths</label><input type="number" step="0.5" value={compDraft.baths} onChange={e => setCompDraft(d => ({ ...d, baths: Number(e.target.value) }))} className="input-std w-full text-xs" /></div>
+                    <div><label className="text-[10px] text-muted">Year Built</label><input type="number" value={compDraft.year_built} onChange={e => setCompDraft(d => ({ ...d, year_built: Number(e.target.value) }))} className="input-std w-full text-xs" /></div>
+                    <div><label className="text-[10px] text-muted">Distance (mi)</label><input type="number" step="0.1" value={compDraft.distance_miles} onChange={e => setCompDraft(d => ({ ...d, distance_miles: Number(e.target.value) }))} className="input-std w-full text-xs" /></div>
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <label className="flex items-center gap-1.5 text-xs text-muted cursor-pointer">
+                      <input type="checkbox" checked={compDraft.same_subdivision} onChange={e => setCompDraft(d => ({ ...d, same_subdivision: e.target.checked }))} className="accent-[#3AADE8]" /> Same subdivision
+                    </label>
+                    <button onClick={addManualComp} disabled={!compDraft.address || !compDraft.sale_price} className="rounded-lg bg-accent px-4 py-1.5 text-xs font-semibold text-white hover:bg-accent/80 disabled:opacity-30 transition-colors">Add</button>
+                    <button onClick={() => setShowCompForm(false)} className="text-xs text-muted hover:text-foreground transition-colors">Cancel</button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Manual comps table */}
+            {manualComps.length > 0 && (
+              <div className="rounded-xl border border-border bg-card overflow-hidden mb-4">
+                <table className="w-full text-xs">
+                  <thead><tr className="border-b border-border text-muted">
+                    <th className="text-left px-3 py-2">Address</th><th className="text-right px-3 py-2">Price</th><th className="text-right px-3 py-2">Sqft</th><th className="text-right px-3 py-2">Bd/Ba</th><th className="text-right px-3 py-2">Date</th><th className="px-3 py-2"></th>
+                  </tr></thead>
+                  <tbody>
+                    {manualComps.map((c, i) => (
+                      <tr key={i} className="border-b border-border/30">
+                        <td className="px-3 py-2 text-foreground">{c.address}</td>
+                        <td className="px-3 py-2 text-right text-gold" style={mono}>{money(c.sale_price)}</td>
+                        <td className="px-3 py-2 text-right text-muted">{c.sqft.toLocaleString()}</td>
+                        <td className="px-3 py-2 text-right text-muted">{c.beds}/{c.baths}</td>
+                        <td className="px-3 py-2 text-right text-muted">{c.sale_date}</td>
+                        <td className="px-3 py-2 text-right"><button onClick={() => removeManualComp(i)} className="text-pass hover:text-pass/80">&times;</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             )}
+
+            {/* ARV Result + Override */}
+            <div className="rounded-xl border border-gold/30 bg-card p-6 mb-8 text-center">
+              <p className="text-xs text-muted mb-1">After Repair Value (ARV)</p>
+              {report.arvResult ? (
+                <>
+                  <p className="text-4xl font-black text-gold mb-2" style={mono}>{money(arvOverride ?? report.arvResult.arv)}</p>
+                  <p className="text-sm text-muted mb-3">{report.arvResult.method}</p>
+                  <ConfidenceBadge level={report.arvResult.confidence} />
+                </>
+              ) : (
+                <p className="text-lg text-muted mb-2">{arvOverride ? money(arvOverride) : 'No comps -- enter ARV manually below'}</p>
+              )}
+              <div className="mt-4 flex items-center justify-center gap-2">
+                <label className="text-xs text-muted">Override ARV: $</label>
+                <input
+                  type="number" placeholder="Leave blank to use calculated"
+                  value={arvOverride ?? ''}
+                  onChange={e => setArvOverride(e.target.value ? Number(e.target.value) : null)}
+                  className="input-std w-48 text-center text-sm" style={mono}
+                />
+              </div>
+            </div>
 
             {/* ═══ SECTION 3: Repair Estimate ═══ */}
             {report.repairEstimate && (
               <>
                 <SectionHeader title="Estimated Repairs" badge={money(report.repairEstimate.total_recommended)} />
-                {report.repairEstimate.mode === 'ai_photo' && (
-                  <div className="flex items-center gap-2 mb-3">
-                    <span className="rounded-full bg-accent/10 text-accent px-3 py-0.5 text-xs font-bold">AI Photo Analysis</span>
-                    <span className="text-xs text-muted">Condition: {report.repairEstimate.overall_condition}</span>
-                  </div>
-                )}
                 <div className="rounded-xl border border-border bg-card overflow-hidden mb-8">
                   <table className="w-full text-sm">
                     <thead>
@@ -1010,23 +1003,103 @@ export default function AnalyzePage() {
               </>
             )}
 
-            {/* ═══ SECTION 4: Three Offers ═══ */}
-            {report.allOffers && (
+            {/* ═══ SECTION 4: Three Offer Cards (real-time) ═══ */}
+            {liveOffers && (
               <>
                 <SectionHeader title="Offer Strategies" />
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 mb-6">
-                  <CashOfferCard offer={report.allOffers.cash} />
-                  <OwnerFinanceCard offer={report.allOffers.owner_finance} />
-                  <NovationCard offer={report.allOffers.novation} />
+                  {/* CASH */}
+                  <div className={`rounded-xl border p-5 ${liveOffers.cashWorks ? 'border-go/30 bg-go/[0.03]' : 'border-border bg-card'}`}>
+                    <p className="text-xs text-muted mb-1">CASH OFFER</p>
+                    <p className="text-sm text-muted mb-3">Fast close. Lowest price. Highest certainty.</p>
+                    <p className="text-xs text-muted mb-0.5">Maximum Offer (MAO)</p>
+                    <p className="text-3xl font-black text-gold mb-3" style={mono}>{money(liveOffers.mao)}</p>
+                    <div className="space-y-2 text-xs">
+                      <OfferLine label="Start at" value={money(liveOffers.cashStart)} bold />
+                      <OfferLine label="Walk away above" value={money(liveOffers.mao)} />
+                      <div className="h-px bg-border" />
+                      <OfferLine label="Your Profit" value={`${money(liveOffers.cashAssignCon)}-${money(liveOffers.cashAssignAgg)}`} green />
+                      <OfferLine label="Buyer Profit" value={money(liveOffers.buyerProfit)} />
+                      <OfferLine label="Buyer ROI" value={`${liveOffers.buyerRoi.toFixed(1)}%`} />
+                      {liveOffers.spread != null && <OfferLine label="Spread vs asking" value={money(liveOffers.spread)} green={liveOffers.spread > 0} red={liveOffers.spread < 0} />}
+                    </div>
+                    <div className={`mt-3 rounded-lg px-3 py-2 text-xs font-medium ${liveOffers.cashWorks ? 'bg-go/10 text-go' : 'bg-pass/10 text-pass'}`}>
+                      {liveOffers.cashWorks ? 'Deal works at MAO' : 'Numbers don\'t work'}
+                    </div>
+                  </div>
+
+                  {/* OWNER FINANCE */}
+                  <div className={`rounded-xl border p-5 ${liveOffers.ofWorks ? 'border-[#8B5CF6]/30 bg-[#8B5CF6]/[0.03]' : 'border-border bg-card'}`}>
+                    <p className="text-xs text-muted mb-1">OWNER FINANCE</p>
+                    <p className="text-sm text-muted mb-3">Higher price for seller. Monthly income stream.</p>
+                    <p className="text-xs text-muted mb-0.5">Purchase Price</p>
+                    <p className="text-3xl font-black text-gold mb-3" style={mono}>{money(liveOffers.ofPurchase)}</p>
+                    <div className="space-y-2 text-xs">
+                      <OfferLine label="Down" value={`${money(liveOffers.ofDown)} (10%)`} />
+                      <div className="flex justify-between items-center">
+                        <span className="text-muted">Rate:</span>
+                        <input type="number" step="0.5" min="0" max="20" value={ofInterestRate} onChange={e => setOfInterestRate(Number(e.target.value))} className="input-std w-16 text-right text-xs py-0.5 px-1" style={mono} />
+                        <span className="text-muted">%</span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-muted">Term:</span>
+                        <input type="number" min="1" max="40" value={ofTermYears} onChange={e => setOfTermYears(Number(e.target.value))} className="input-std w-16 text-right text-xs py-0.5 px-1" style={mono} />
+                        <span className="text-muted">yr</span>
+                      </div>
+                      <OfferLine label="Monthly Payment" value={money(liveOffers.ofMonthly)} />
+                      <div className="h-px bg-border" />
+                      <div className="flex justify-between items-center">
+                        <span className="text-muted">Est. Rent:</span>
+                        <span className="flex items-center gap-1">$<input type="number" value={ofEstimatedRent} onChange={e => setOfEstimatedRent(Number(e.target.value))} className="input-std w-20 text-right text-xs py-0.5 px-1" style={mono} /></span>
+                      </div>
+                      <OfferLine label="Cash Flow" value={`${money(liveOffers.ofCashflow)}/mo`} green={liveOffers.ofCashflow > 0} red={liveOffers.ofCashflow < 0} />
+                      <div className="h-px bg-border" />
+                      <OfferLine label="Start at" value={`${money(liveOffers.ofStartPrice)} / ${money(liveOffers.ofStartDown)} down / 4%`} bold />
+                      <OfferLine label="Your Fee" value={money(liveOffers.ofAssignment)} green />
+                      <OfferLine label="Seller Total" value={money(liveOffers.ofTotalSeller)} />
+                    </div>
+                    <div className={`mt-3 rounded-lg px-3 py-2 text-xs font-medium ${liveOffers.ofWorks ? 'bg-[#8B5CF6]/10 text-[#8B5CF6]' : 'bg-pass/10 text-pass'}`}>
+                      {liveOffers.ofWorks ? 'Works if seller wants monthly income' : 'Negative cash flow'}
+                    </div>
+                  </div>
+
+                  {/* NOVATION */}
+                  <div className={`rounded-xl border p-5 ${liveOffers.novWorks ? 'border-gold/30 bg-gold/[0.03]' : 'border-border bg-card'}`}>
+                    <p className="text-xs text-muted mb-1">NOVATION</p>
+                    <p className="text-sm text-muted mb-3">Highest payout for seller. You coordinate the rehab.</p>
+                    <p className="text-xs text-muted mb-0.5">Seller Net Price</p>
+                    <p className="text-3xl font-black text-gold mb-3" style={mono}>{money(liveOffers.novSeller)}</p>
+                    <div className="space-y-2 text-xs">
+                      <OfferLine label="Renovate for" value={money(liveOffers.novReno)} />
+                      <OfferLine label="List at" value={money(liveOffers.novList)} />
+                      <OfferLine label="Commission (5%)" value={money(liveOffers.novCommission)} />
+                      <OfferLine label="Closing (2%)" value={money(liveOffers.novClosing)} />
+                      <div className="flex justify-between items-center">
+                        <span className="text-muted">Holding costs:</span>
+                        <span className="flex items-center gap-1">$<input type="number" value={novHoldingCosts} onChange={e => setNovHoldingCosts(Number(e.target.value))} className="input-std w-20 text-right text-xs py-0.5 px-1" style={mono} /></span>
+                      </div>
+                      <div className="h-px bg-border" />
+                      <OfferLine label="Start at" value={money(liveOffers.novStartSeller)} bold />
+                      <OfferLine label="Your Profit" value={money(liveOffers.novProfit)} green={liveOffers.novProfit > 0} red={liveOffers.novProfit <= 0} />
+                      <OfferLine label="Timeline" value="~4 months" />
+                    </div>
+                    <div className={`mt-3 rounded-lg px-3 py-2 text-xs font-medium ${liveOffers.novWorks ? 'bg-gold/10 text-gold' : 'bg-pass/10 text-pass'}`}>
+                      {liveOffers.novWorks ? 'Best if seller wants maximum price' : 'Insufficient margin'}
+                    </div>
+                  </div>
                 </div>
 
-                {/* Best Strategy Banner */}
-                <div className="rounded-xl border border-gold/30 bg-gold/5 p-5 mb-8">
-                  <p className="text-sm font-bold text-gold mb-2">Recommended Strategy</p>
-                  <p className="text-sm text-foreground/90 leading-relaxed">{report.allOffers.strategy_reasoning}</p>
+                {/* Recommendation Banner */}
+                <div className="rounded-xl border border-gold/30 bg-gold/5 p-5 mb-6">
+                  <p className="text-sm font-bold text-gold mb-2">Recommended Strategy: {liveOffers.best}</p>
+                  <p className="text-sm text-foreground/90 leading-relaxed">
+                    Start with <strong>CASH</strong> at {money(liveOffers.cashStart)}.
+                    {liveOffers.ofWorks && <> If seller rejects, pivot to <strong>OWNER FINANCE</strong> at {money(liveOffers.ofStartPrice)} with {money(liveOffers.ofStartDown)} down and 4% interest.</>}
+                    {liveOffers.novWorks && <> For maximum seller price, propose <strong>NOVATION</strong> at {money(liveOffers.novStartSeller)}.</>}
+                  </p>
                 </div>
 
-                {/* Deal Comparison Table */}
+                {/* Comparison Table */}
                 <div className="rounded-xl border border-border bg-card overflow-hidden mb-8">
                   <table className="w-full text-sm">
                     <thead>
@@ -1038,20 +1111,28 @@ export default function AnalyzePage() {
                       </tr>
                     </thead>
                     <tbody>
-                      <CompareRow label="Seller Gets" cash={money(report.allOffers.cash.mao)} of={`${money(report.allOffers.owner_finance.total_seller_receives)} (over ${report.allOffers.owner_finance.term_years}yr)`} nov={money(report.allOffers.novation.seller_price)} />
-                      <CompareRow label="Your Profit" cash={`${money(report.allOffers.cash.assignment_fee.conservative)}-${money(report.allOffers.cash.assignment_fee.aggressive)}`} of={`${money(report.allOffers.owner_finance.assignment_fee)} + ${money(report.allOffers.owner_finance.monthly_cashflow)}/mo`} nov={money(report.allOffers.novation.wholesaler_profit)} />
-                      <CompareRow label="Time to Close" cash="7-14 days" of="30 days" nov={report.allOffers.novation.estimated_timeline} />
-                      <CompareRow label="Works?" cash={report.allOffers.cash.works ? 'Yes' : 'No'} of={report.allOffers.owner_finance.works ? 'Yes' : 'No'} nov={report.allOffers.novation.works ? 'Yes' : 'No'} />
+                      <CompareRow label="Seller Gets" cash={money(liveOffers.mao)} of={money(liveOffers.ofTotalSeller)} nov={money(liveOffers.novSeller)} />
+                      <CompareRow label="Your Profit" cash={money(liveOffers.cashAssignTgt)} of={`${money(liveOffers.ofAssignment)} + ${money(liveOffers.ofCashflow)}/mo`} nov={money(liveOffers.novProfit)} />
+                      <CompareRow label="Time to Close" cash="7-14 days" of="30 days" nov="~4 months" />
+                      <CompareRow label="Risk Level" cash="Low" of="Medium" nov="Higher" />
+                      <CompareRow label="Works?" cash={liveOffers.cashWorks ? 'Yes' : 'No'} of={liveOffers.ofWorks ? 'Yes' : 'No'} nov={liveOffers.novWorks ? 'Yes' : 'No'} />
                     </tbody>
                   </table>
                 </div>
               </>
             )}
 
+            {/* No offers message */}
+            {!liveOffers && (
+              <div className="rounded-xl border border-border bg-card p-8 mb-8 text-center">
+                <p className="text-muted text-sm">Add comps or override ARV above to see offer strategies.</p>
+              </div>
+            )}
+
             {/* ═══ SECTION 5: Negotiation Guide ═══ */}
             {report.negotiationGuide && (
               <>
-                <button onClick={() => setShowNegGuide(!showNegGuide)} className="w-full rounded-xl border border-accent/20 bg-accent/5 px-6 py-4 flex items-center justify-between hover:bg-accent/10 transition-colors mb-2">
+                <button onClick={() => setShowNegGuide(!showNegGuide)} className="w-full rounded-xl border border-accent/20 bg-accent/5 px-6 py-4 flex items-center justify-between hover:bg-accent/10 transition-colors mb-2 print:hidden">
                   <span className="text-sm font-semibold text-accent">Negotiation Guide</span>
                   <span className={`text-muted transition-transform ${showNegGuide ? 'rotate-180' : ''}`}>&#9662;</span>
                 </button>
@@ -1065,10 +1146,7 @@ export default function AnalyzePage() {
                       <p className="text-xs font-bold text-muted mb-2 tracking-wider">KEY POINTS</p>
                       <ul className="space-y-1.5">
                         {report.negotiationGuide.key_points.map((pt, i) => (
-                          <li key={i} className="text-xs text-muted/80 flex items-start gap-2">
-                            <span className="text-accent mt-0.5">&#8226;</span>
-                            <span>{pt}</span>
-                          </li>
+                          <li key={i} className="text-xs text-muted/80 flex items-start gap-2"><span className="text-accent mt-0.5">&#8226;</span><span>{pt}</span></li>
                         ))}
                       </ul>
                     </div>
@@ -1087,31 +1165,30 @@ export default function AnalyzePage() {
                     <p className="text-sm text-foreground/90 whitespace-pre-wrap leading-relaxed">{pt.text}</p>
                   </div>
                 ))}
-                <p className="text-xs text-muted/40 text-center">AI analysis: ~$0.01 &middot; {aiAnalysis.usage.input_tokens + aiAnalysis.usage.output_tokens} tokens</p>
               </div>
             )}
 
             {/* ═══ Action Buttons ═══ */}
-            <div className="flex items-center justify-center gap-4 flex-wrap py-4">
+            <div className="flex items-center justify-center gap-4 flex-wrap py-4 print:hidden">
               <button onClick={saveToPipeline} disabled={saving} className="rounded-xl bg-accent px-8 py-3 text-sm font-semibold text-white hover:bg-accent/80 transition-colors disabled:opacity-50">
                 {saving ? 'Saving...' : 'Save to Pipeline'}
               </button>
-              <button onClick={exportPDF} disabled={exporting} className="rounded-xl border border-accent/50 px-6 py-3 text-sm font-medium text-accent hover:bg-accent/10 transition-colors disabled:opacity-50">
-                {exporting ? 'Generating...' : 'Export PDF'}
+              <button onClick={exportPDF} className="rounded-xl border border-accent/50 px-6 py-3 text-sm font-medium text-accent hover:bg-accent/10 transition-colors">
+                Export PDF
               </button>
-              <button disabled className="rounded-xl border border-border px-6 py-3 text-sm text-muted cursor-not-allowed opacity-50">
-                Share Report
+              <button onClick={runAiOpinion} className="rounded-xl border border-accent/50 px-6 py-3 text-sm font-medium text-accent hover:bg-accent/10 transition-colors">
+                {aiAnalysis ? 'Re-run AI Opinion' : 'Get AI Second Opinion'}
               </button>
-              <button onClick={runAiOpinion} disabled={aiLoading || !report.arvResult} className="rounded-xl border border-accent/50 px-6 py-3 text-sm font-medium text-accent hover:bg-accent/10 transition-colors disabled:opacity-50">
-                {aiLoading ? 'Analyzing...' : aiAnalysis ? 'Re-run AI Opinion' : 'Get AI Second Opinion'}
-              </button>
-              <button onClick={() => { setSubject(defaultSubject); setPhotos([]); setReport(null); setAiAnalysis(null); setStep('input'); }} className="rounded-xl border border-border px-6 py-3 text-sm text-muted hover:text-foreground transition-colors">
+              <button onClick={resetAll} className="rounded-xl border border-border px-6 py-3 text-sm text-muted hover:text-foreground transition-colors">
                 New Analysis
               </button>
             </div>
           </div>
         )}
       </main>
+
+      {/* Toast */}
+      {toast && <Toast message={toast.message} type={toast.type} onDone={() => setToast(null)} />}
 
       <style jsx global>{`
         .input-std {
@@ -1131,6 +1208,17 @@ export default function AnalyzePage() {
           to { opacity: 1; transform: translateY(0); }
         }
         .animate-fadeIn { animation: fadeIn 0.3s ease-out; }
+
+        @media print {
+          nav, .print\\:hidden { display: none !important; }
+          body { background: white !important; color: black !important; }
+          .bg-card, .bg-background { background: white !important; }
+          .text-foreground { color: black !important; }
+          .text-muted { color: #666 !important; }
+          .text-gold { color: #B8860B !important; }
+          .text-accent { color: #2980B9 !important; }
+          .border-border { border-color: #ccc !important; }
+        }
       `}</style>
     </div>
   );
@@ -1158,15 +1246,70 @@ function DataRow({ label, value, mono: useMono }: { label: string; value: string
   );
 }
 
+function EditableRow({ label, field, value, editing, setEditing, onSave, type = 'text', step, options }: {
+  label: string; field: string; value: unknown; editing: string | null; setEditing: (f: string | null) => void;
+  onSave: (field: string, value: unknown) => void; type?: string; step?: string; options?: string[];
+}) {
+  const display = value != null && value !== '' ? String(value) : '--';
+  const isEditing = editing === field;
+
+  if (isEditing) {
+    if (options) {
+      return (
+        <div className="flex items-center justify-between py-1 border-b border-accent/30">
+          <span className="text-accent text-xs">{label}</span>
+          <select
+            autoFocus
+            value={String(value ?? '')}
+            onChange={e => { onSave(field, e.target.value); setEditing(null); }}
+            onBlur={() => setEditing(null)}
+            className="input-std text-xs py-0.5 px-2 w-32"
+          >
+            {options.map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+        </div>
+      );
+    }
+    return (
+      <div className="flex items-center justify-between py-1 border-b border-accent/30">
+        <span className="text-accent text-xs">{label}</span>
+        <input
+          autoFocus type={type} step={step}
+          defaultValue={value != null ? String(value) : ''}
+          onBlur={e => {
+            const v = type === 'number' ? (e.target.value ? Number(e.target.value) : null) : e.target.value;
+            onSave(field, v);
+            setEditing(null);
+          }}
+          onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+          className="input-std text-xs py-0.5 px-2 w-32 text-right"
+          style={type === 'number' ? { fontFamily: "'JetBrains Mono', monospace" } : undefined}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-between py-1 border-b border-border/30 last:border-0 group cursor-pointer hover:bg-white/[0.02]" onClick={() => setEditing(field)}>
+      <span className="text-muted text-xs">{label}</span>
+      <span className="flex items-center gap-1.5">
+        <span className={`text-foreground text-sm ${type === 'number' ? 'font-semibold' : ''}`} style={type === 'number' ? { fontFamily: "'JetBrains Mono', monospace" } : undefined}>
+          {type === 'number' && value != null ? (field === 'asking_price' ? money(value as number) : Number(value).toLocaleString()) : display}
+        </span>
+        <span className="text-muted/0 group-hover:text-muted/50 text-[10px] transition-colors">&#9998;</span>
+      </span>
+    </div>
+  );
+}
+
 function ConfidenceBadge({ level }: { level: string }) {
   const colors: Record<string, string> = { high: 'bg-go/10 text-go border-go/30', medium: 'bg-negotiate/10 text-negotiate border-negotiate/30', low: 'bg-pass/10 text-pass border-pass/30' };
   return <span className={`rounded-full border px-3 py-0.5 text-xs font-bold uppercase ${colors[level] || colors.low}`}>{level}</span>;
 }
 
-function CompCard({ comp, subject }: { comp: AdjustedComp; subject: Subject }) {
-  const hasFlagWarnings = comp.warnings && comp.warnings.length > 0;
+function CompCard({ comp }: { comp: AdjustedComp }) {
   return (
-    <div className={`rounded-xl border bg-card p-4 ${hasFlagWarnings ? 'border-negotiate/30' : 'border-border'}`}>
+    <div className={`rounded-xl border bg-card p-4 ${comp.warnings?.length > 0 ? 'border-negotiate/30' : 'border-border'}`}>
       <div className="flex items-start justify-between mb-2">
         <p className="text-sm font-semibold text-foreground">{comp.address}</p>
         {comp.same_subdivision && <span className="text-[10px] bg-go/10 text-go rounded-full px-2 py-0.5">Same subdivision</span>}
@@ -1198,75 +1341,15 @@ function CompCard({ comp, subject }: { comp: AdjustedComp; subject: Subject }) {
   );
 }
 
-function CashOfferCard({ offer }: { offer: CashOffer }) {
+function OfferLine({ label, value, bold, green, red }: { label: string; value: string; bold?: boolean; green?: boolean; red?: boolean }) {
+  let cls = 'text-foreground';
+  if (green) cls = 'text-go font-semibold';
+  if (red) cls = 'text-pass font-semibold';
+  if (bold) cls += ' font-semibold';
   return (
-    <div className={`rounded-xl border p-5 ${offer.works ? 'border-go/30 bg-go/[0.03]' : 'border-border bg-card'}`}>
-      <p className="text-xs text-muted mb-1">CASH OFFER</p>
-      <p className="text-sm text-muted mb-3">Fast close. Lowest price. Highest certainty.</p>
-      <p className="text-xs text-muted mb-0.5">Maximum Offer (MAO)</p>
-      <p className="text-3xl font-black text-gold mb-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.mao)}</p>
-      <div className="space-y-2 text-xs">
-        <div className="flex justify-between"><span className="text-muted">Start at:</span><span className="text-foreground font-semibold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.suggested_starting_offer)}</span></div>
-        <div className="flex justify-between"><span className="text-muted">Walk away above:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.walk_away_price)}</span></div>
-        <div className="h-px bg-border" />
-        <div className="flex justify-between"><span className="text-muted">Your Profit:</span><span className="text-go font-semibold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.assignment_fee.conservative)}-{money(offer.assignment_fee.aggressive)}</span></div>
-        <div className="flex justify-between"><span className="text-muted">Buyer Profit:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.buyer_profit_at_mao)}</span></div>
-        <div className="flex justify-between"><span className="text-muted">Buyer ROI:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{offer.buyer_roi}%</span></div>
-      </div>
-      <div className={`mt-3 rounded-lg px-3 py-2 text-xs font-medium ${offer.works ? 'bg-go/10 text-go' : 'bg-pass/10 text-pass'}`}>
-        {offer.works ? 'Deal works at MAO' : 'Numbers don\'t work'}
-      </div>
-    </div>
-  );
-}
-
-function OwnerFinanceCard({ offer }: { offer: OwnerFinanceOffer }) {
-  return (
-    <div className={`rounded-xl border p-5 ${offer.works ? 'border-accent/30 bg-accent/[0.03]' : 'border-border bg-card'}`}>
-      <p className="text-xs text-muted mb-1">OWNER FINANCE</p>
-      <p className="text-sm text-muted mb-3">Higher price for seller. Monthly income stream.</p>
-      <p className="text-xs text-muted mb-0.5">Purchase Price</p>
-      <p className="text-3xl font-black text-gold mb-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.purchase_price)}</p>
-      <div className="space-y-2 text-xs">
-        <div className="flex justify-between"><span className="text-muted">Down:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.down_payment)} ({(offer.down_payment_pct * 100).toFixed(0)}%)</span></div>
-        <div className="flex justify-between"><span className="text-muted">Terms:</span><span className="text-foreground">{(offer.interest_rate * 100).toFixed(0)}% / {offer.term_years}yr</span></div>
-        <div className="flex justify-between"><span className="text-muted">Monthly:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.monthly_payment)}</span></div>
-        <div className="h-px bg-border" />
-        <div className="flex justify-between"><span className="text-muted">Start at:</span><span className="text-foreground font-semibold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.suggested_starting_offer.price)} / {(offer.suggested_starting_offer.interest_rate * 100).toFixed(0)}%</span></div>
-        <div className="h-px bg-border" />
-        <div className="flex justify-between"><span className="text-muted">Cash Flow:</span><span className={`font-semibold ${offer.monthly_cashflow >= 0 ? 'text-go' : 'text-pass'}`} style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.market_rent)} - {money(offer.monthly_payment)} = {money(offer.monthly_cashflow)}/mo</span></div>
-        <div className="flex justify-between"><span className="text-muted">Your Fee:</span><span className="text-go font-semibold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.assignment_fee)}</span></div>
-        <div className="flex justify-between"><span className="text-muted">Seller Total:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.total_seller_receives)}</span></div>
-      </div>
-      <div className={`mt-3 rounded-lg px-3 py-2 text-xs font-medium ${offer.works ? 'bg-accent/10 text-accent' : 'bg-pass/10 text-pass'}`}>
-        {offer.works ? 'Works if seller wants monthly income' : 'Negative cash flow'}
-      </div>
-    </div>
-  );
-}
-
-function NovationCard({ offer }: { offer: NovationOffer }) {
-  return (
-    <div className={`rounded-xl border p-5 ${offer.works ? 'border-negotiate/30 bg-negotiate/[0.03]' : 'border-border bg-card'}`}>
-      <p className="text-xs text-muted mb-1">NOVATION</p>
-      <p className="text-sm text-muted mb-3">Highest payout for seller. You coordinate the rehab.</p>
-      <p className="text-xs text-muted mb-0.5">Seller Net Price</p>
-      <p className="text-3xl font-black text-gold mb-3" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.seller_price)}</p>
-      <div className="space-y-2 text-xs">
-        <div className="flex justify-between"><span className="text-muted">Renovate for:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.renovation_cost)}</span></div>
-        <div className="flex justify-between"><span className="text-muted">List at:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.listing_price)}</span></div>
-        <div className="h-px bg-border" />
-        <div className="flex justify-between"><span className="text-muted">Commission:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.agent_commission)}</span></div>
-        <div className="flex justify-between"><span className="text-muted">Closing:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.closing_costs)}</span></div>
-        <div className="flex justify-between"><span className="text-muted">Holding:</span><span className="text-foreground" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.holding_costs)} ({offer.estimated_holding_months}mo)</span></div>
-        <div className="h-px bg-border" />
-        <div className="flex justify-between"><span className="text-muted">Start at:</span><span className="text-foreground font-semibold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.suggested_starting_offer.seller_price)}</span></div>
-        <div className="flex justify-between"><span className="text-muted">Your Profit:</span><span className="text-go font-bold" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{money(offer.wholesaler_profit)}</span></div>
-        <div className="flex justify-between"><span className="text-muted">Timeline:</span><span className="text-foreground">~{offer.estimated_timeline}</span></div>
-      </div>
-      <div className={`mt-3 rounded-lg px-3 py-2 text-xs font-medium ${offer.works ? 'bg-negotiate/10 text-negotiate' : 'bg-pass/10 text-pass'}`}>
-        {offer.works ? 'Best if seller wants maximum price' : 'Insufficient margin'}
-      </div>
+    <div className="flex justify-between">
+      <span className="text-muted">{label}:</span>
+      <span className={cls} style={{ fontFamily: "'JetBrains Mono', monospace" }}>{value}</span>
     </div>
   );
 }
