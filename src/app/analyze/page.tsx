@@ -505,10 +505,6 @@ export default function AnalyzePage() {
         updateStep(1, { status: 'error', detail: 'Comp search failed. Add comps manually.' });
       }
 
-      if (!propertyFound && rawComps.length === 0) {
-        setLookupFailed(true);
-      }
-
       setDataSource(source);
 
       // Step 2-4: Filter, adjust, ARV
@@ -586,7 +582,16 @@ export default function AnalyzePage() {
         setAnalysisSteps(prev => prev.map(s => s.status === 'running' ? { ...s, status: 'error', detail: 'Cancelled' } : s));
       } else {
         setAnalysisSteps(prev => prev.map(s => s.status === 'running' ? { ...s, status: 'error', detail: 'Failed' } : s));
-        setLookupFailed(true);
+        // Still show the report so user can add comps/ARV manually
+        const fallbackReport: FullReport = {
+          subject: { ...subject }, photos, rawComps: [],
+          qualified: [], disqualified: [], adjusted: [],
+          arvResult: null, repairEstimate: null, allOffers: null, negotiationGuide: null,
+          generatedAt: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+          confidence: 'low',
+        };
+        setReport(fallbackReport);
+        setTimeout(() => setStep('report'), 600);
       }
     }
   };
@@ -831,21 +836,24 @@ export default function AnalyzePage() {
                 </div>
               ))}
             </div>
-            {lookupFailed && (
-              <div className="mt-8 text-center animate-fadeIn">
-                <p className="text-sm text-negotiate mb-3">Auto-lookup couldn&apos;t find this property.</p>
-                <button onClick={() => { if (abortRef.current) abortRef.current.abort(); setStep('input'); setLookupStatus('Enter details manually.'); setLookupFailed(true); }}
-                  className="rounded-lg bg-accent px-6 py-2.5 text-sm font-semibold text-white hover:bg-accent/80 transition-colors">
-                  Enter Details Manually
-                </button>
-              </div>
-            )}
-            {loadingTooLong && !lookupFailed && (
+            {loadingTooLong && (
               <div className="mt-8 text-center animate-fadeIn">
                 <p className="text-xs text-negotiate mb-3">Taking longer than expected...</p>
-                <button onClick={() => { if (abortRef.current) abortRef.current.abort(); setStep('input'); setLoadingTooLong(false); setLookupFailed(true); }}
+                <button onClick={() => {
+                  if (abortRef.current) abortRef.current.abort();
+                  setLoadingTooLong(false);
+                  const fallbackReport: FullReport = {
+                    subject: { ...subject }, photos, rawComps: [],
+                    qualified: [], disqualified: [], adjusted: [],
+                    arvResult: null, repairEstimate: null, allOffers: null, negotiationGuide: null,
+                    generatedAt: new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+                    confidence: 'low',
+                  };
+                  setReport(fallbackReport);
+                  setStep('report');
+                }}
                   className="rounded-lg border border-border px-4 py-2 text-xs text-muted hover:text-foreground transition-colors">
-                  Switch to manual entry
+                  Skip to manual entry
                 </button>
               </div>
             )}
