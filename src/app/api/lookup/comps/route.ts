@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import getDb from '@/lib/db';
-import { lookupComps, extractFromZoriaResponse } from '@/lib/zoriaLookup';
+import { researchComps } from '@/lib/webSearch';
 import { filterComps } from '@/lib/compEngine';
 
 export async function POST(req: NextRequest) {
@@ -12,65 +11,41 @@ export async function POST(req: NextRequest) {
 
     const subject = subject_details || {};
 
-    // Check cache
-    const db = getDb();
-    ensureCacheTable(db);
-    const cacheKey = `${address}|${city}|${state}|${zip}`.toLowerCase();
-    const cached = db.prepare("SELECT data FROM lookup_cache WHERE cache_key = ? AND type = ? AND created_at > datetime('now', '-1 day')").get(cacheKey, 'comps') as { data: string } | undefined;
+    const parsed = await researchComps(address, city || '', state || '', zip || '', subject);
 
-    let rawComps: Record<string, unknown>[];
-
-    if (cached) {
-      rawComps = JSON.parse(cached.data);
-    } else {
-      // Call Zoria
-      const rawResponse = await lookupComps(address, city || '', state || '', zip || '', subject);
-      const parsed = extractFromZoriaResponse(rawResponse);
-
-      if (!parsed || !Array.isArray(parsed)) {
-        // Try to handle if parsed is an object with a comps array
-        const compsArray = parsed?.comps || parsed?.results || parsed?.comparables;
-        if (Array.isArray(compsArray)) {
-          rawComps = compsArray.map(normalizeComp);
-        } else {
-          return NextResponse.json({
-            available: false,
-            error: 'lookup_failed',
-            fallback: 'manual',
-            qualified: [],
-            disqualified: [],
-            raw_count: 0,
-          });
-        }
-      } else {
-        rawComps = parsed.map(normalizeComp);
+    if (!parsed || !Array.isArray(parsed) || parsed.length === 0) {
+      // Check if parsed is an object with a comps array
+      const compsArray = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? ((parsed as Record<string, unknown>).comps || (parsed as Record<string, unknown>).results || (parsed as Record<string, unknown>).comparables) as unknown[]
+        : null;
+      if (Array.isArray(compsArray) && compsArray.length > 0) {
+        const rawComps = (compsArray as Record<string, unknown>[]).map(normalizeComp);
+        const filtered = filterComps(subject, rawComps);
+        return NextResponse.json({
+          available: true, comps: rawComps,
+          qualified: filtered.qualified, disqualified: filtered.disqualified,
+          raw_count: rawComps.length, source: 'web_search',
+        });
       }
-
-      // Cache
-      db.prepare("INSERT OR REPLACE INTO lookup_cache (cache_key, type, data, created_at) VALUES (?, ?, ?, datetime('now'))").run(cacheKey, 'comps', JSON.stringify(rawComps));
+      return NextResponse.json({
+        available: false, error: 'lookup_failed', fallback: 'manual',
+        qualified: [], disqualified: [], raw_count: 0,
+      });
     }
 
-    // Run through comp engine filter
+    const rawComps = parsed.map(normalizeComp);
     const filtered = filterComps(subject, rawComps);
 
     return NextResponse.json({
-      available: true,
-      comps: rawComps,
-      qualified: filtered.qualified,
-      disqualified: filtered.disqualified,
-      raw_count: rawComps.length,
-      source: 'zoria',
-      cached: !!cached,
+      available: true, comps: rawComps,
+      qualified: filtered.qualified, disqualified: filtered.disqualified,
+      raw_count: rawComps.length, source: 'web_search',
     });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Comp lookup failed';
     return NextResponse.json({
-      available: false,
-      error: message,
-      fallback: 'manual',
-      qualified: [],
-      disqualified: [],
-      raw_count: 0,
+      available: false, error: message, fallback: 'manual',
+      qualified: [], disqualified: [], raw_count: 0,
     });
   }
 }
@@ -80,10 +55,8 @@ function normalizeComp(c: Record<string, unknown>): Record<string, unknown> {
   let daysOld = 0;
   if (saleDate) {
     const sale = new Date(saleDate);
-    const now = new Date();
-    daysOld = Math.floor((now.getTime() - sale.getTime()) / (1000 * 60 * 60 * 24));
+    daysOld = Math.floor((Date.now() - sale.getTime()) / (1000 * 60 * 60 * 24));
   }
-
   const sqft = Number(c.sqft) || Number(c.squareFootage) || 0;
   const salePrice = Number(c.sale_price) || Number(c.salePrice) || 0;
 
@@ -102,7 +75,7 @@ function normalizeComp(c: Record<string, unknown>): Record<string, unknown> {
     same_subdivision: c.same_subdivision === true || c.sameSubdivision === true,
     crosses_major_road: false,
     has_pool: !!c.has_pool || !!c.hasPool,
-    has_garage: !!c.has_garage || !!c.hasGarage || (Number(c.garage_count) || Number(c.garageCount) || 0) > 0,
+    has_garage: !!c.has_garage || !!c.hasGarage || (Number(c.garage_count) || 0) > 0,
     garage_count: Number(c.garage_count) || Number(c.garageCount) || 0,
     has_carport: !!c.has_carport || !!c.hasCarport,
     has_basement: !!c.has_basement || !!c.hasBasement,
@@ -111,18 +84,6 @@ function normalizeComp(c: Record<string, unknown>): Record<string, unknown> {
     guest_house_sqft: 0,
     subdivision: (c.subdivision as string) || null,
     price_per_sqft: sqft > 0 ? Math.round((salePrice / sqft) * 100) / 100 : 0,
-    source: (c.source as string) || 'zoria',
+    source: (c.source as string) || 'web_search',
   };
-}
-
-function ensureCacheTable(db: ReturnType<typeof getDb>) {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS lookup_cache (
-      cache_key TEXT NOT NULL,
-      type TEXT NOT NULL,
-      data TEXT NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (cache_key, type)
-    )
-  `);
 }
