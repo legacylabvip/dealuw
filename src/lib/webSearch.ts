@@ -22,8 +22,9 @@ function extractJSON(text: string): unknown {
 }
 
 async function callAnthropicWebSearch(prompt: string): Promise<{ text: string; parsed: unknown }> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY not configured');
+  console.log('[DealUW] API key present, length:', apiKey.length, 'starts with:', apiKey.substring(0, 10));
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 60000);
