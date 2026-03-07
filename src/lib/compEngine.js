@@ -71,9 +71,15 @@ export function filterComps(subject, rawComps, referenceDate = new Date()) {
       }
     }
 
-    // Rule 3 — PROPERTY TYPE: must match
+    // Rule 3 — PROPERTY TYPE: must match (normalize single-family variants)
     if (subject.property_type && comp.property_type) {
-      if (subject.property_type.toLowerCase() !== comp.property_type.toLowerCase()) {
+      const singleFamilyTypes = ['ranch', '2-story', 'split-level', 'historic', 'single family', 'single-family', 'sfr', 'house', 'detached', 'bungalow', 'cape cod', 'colonial', 'craftsman', 'cottage', 'tudor', 'victorian', 'residential'];
+      const subType = subject.property_type.toLowerCase();
+      const compType = comp.property_type.toLowerCase();
+      const subIsSF = singleFamilyTypes.includes(subType);
+      const compIsSF = singleFamilyTypes.includes(compType);
+      // If both are single-family variants, they match
+      if (!(subType === compType || (subIsSF && compIsSF))) {
         reasons.push(`Type mismatch: ${comp.property_type} vs ${subject.property_type}`);
       }
     }

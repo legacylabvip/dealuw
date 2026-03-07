@@ -51,6 +51,14 @@ function extractFromZoriaResponse(response) {
   // Zoria returns various shapes — normalize
   if (!response) return null;
 
+  // Handle { success: true, data: { data: {...} } } (Zoria wraps in success envelope + data.data)
+  if (response.success && response.data) {
+    const inner = response.data;
+    // data.data is the most common pattern from Zoria research actions
+    if (inner.data) return extractJSON(inner.data);
+    return extractJSON(inner);
+  }
+
   // If response is already parsed JSON with a data/result field
   if (response.result) return extractJSON(response.result);
   if (response.data) return extractJSON(response.data);
