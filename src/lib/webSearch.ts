@@ -147,24 +147,43 @@ ${compsJsonFormat}
 
 If you cannot find exact matches, broaden your search to the full ${zip} zip code. Return whatever sold homes you CAN find — some data is better than none. Do NOT return an empty array unless you truly found nothing.`;
 
-  const { parsed } = await callAnthropicWebSearch(prompt);
+  console.log('[DealUW] Searching for comps:', address, city, state, zip);
+  const { text, parsed } = await callAnthropicWebSearch(prompt);
+  console.log('[DealUW] Primary search result:', parsed ? `${Array.isArray(parsed) ? parsed.length : 'object'} items` : 'null', 'raw length:', text.length);
 
   if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+
+  // If parsed is an object with comps inside
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const obj = parsed as Record<string, unknown>;
+    const arr = obj.comps || obj.results || obj.comparables || obj.sales || obj.data;
+    if (Array.isArray(arr) && arr.length > 0) return arr;
+  }
 
   // Fallback: broader search
   const fallbackPrompt = `Search for recently sold homes in zip code ${zip || 'near ' + city + ' ' + state}.
 
 Search Zillow for "recently sold homes ${zip || city + ' ' + state}" and Redfin for "sold homes ${zip || city + ' ' + state}".
 
-I need homes that sold in the last 6 months that are between ${sqftLow} and ${sqftHigh} sqft. Any style, any age.
+I need homes that sold in the last 12 months. Any size, any style, any age.
 
 Find as many as you can, up to 10. Return ONLY a JSON array:
 ${compsJsonFormat}
 
-Return whatever sold homes you CAN find. Some data is better than none.`;
+Return whatever sold homes you CAN find. Some data is better than none. Do NOT return an empty array.`;
 
+  console.log('[DealUW] Running fallback comp search');
   const fallback = await callAnthropicWebSearch(fallbackPrompt);
+  console.log('[DealUW] Fallback result:', fallback.parsed ? `${Array.isArray(fallback.parsed) ? fallback.parsed.length : 'object'} items` : 'null');
+
   if (Array.isArray(fallback.parsed) && fallback.parsed.length > 0) return fallback.parsed;
+
+  // Try to extract from fallback object
+  if (fallback.parsed && typeof fallback.parsed === 'object' && !Array.isArray(fallback.parsed)) {
+    const obj = fallback.parsed as Record<string, unknown>;
+    const arr = obj.comps || obj.results || obj.comparables || obj.sales || obj.data;
+    if (Array.isArray(arr) && arr.length > 0) return arr;
+  }
 
   return parsed;
 }

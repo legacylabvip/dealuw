@@ -13,27 +13,29 @@ export async function POST(req: NextRequest) {
 
     const parsed = await researchComps(address, city || '', state || '', zip || '', subject);
 
-    if (!parsed || !Array.isArray(parsed) || parsed.length === 0) {
-      // Check if parsed is an object with a comps array
-      const compsArray = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-        ? ((parsed as Record<string, unknown>).comps || (parsed as Record<string, unknown>).results || (parsed as Record<string, unknown>).comparables) as unknown[]
-        : null;
-      if (Array.isArray(compsArray) && compsArray.length > 0) {
-        const rawComps = (compsArray as Record<string, unknown>[]).map(normalizeComp);
-        const filtered = filterComps(subject, rawComps);
+    // Handle various response shapes
+    let compsArray: Record<string, unknown>[];
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      compsArray = parsed as Record<string, unknown>[];
+    } else if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const obj = parsed as Record<string, unknown>;
+      const inner = (obj.comps || obj.results || obj.comparables || obj.sales || obj.data) as unknown[];
+      if (Array.isArray(inner) && inner.length > 0) {
+        compsArray = inner as Record<string, unknown>[];
+      } else {
         return NextResponse.json({
-          available: true, comps: rawComps,
-          qualified: filtered.qualified, disqualified: filtered.disqualified,
-          raw_count: rawComps.length, source: 'web_search',
+          available: false, error: 'no_comps_found', fallback: 'manual',
+          qualified: [], disqualified: [], raw_count: 0,
         });
       }
+    } else {
       return NextResponse.json({
         available: false, error: 'lookup_failed', fallback: 'manual',
         qualified: [], disqualified: [], raw_count: 0,
       });
     }
 
-    const rawComps = parsed.map(normalizeComp);
+    const rawComps = compsArray.map(normalizeComp);
     const filtered = filterComps(subject, rawComps);
 
     return NextResponse.json({
