@@ -11,7 +11,16 @@ export async function POST(req: NextRequest) {
     }
 
     console.log('[DealUW] Property lookup request:', { address, city, state, zip });
-    const parsed = await researchProperty(address, city || '', state || '', zip || '');
+    let parsed: unknown;
+    try {
+      parsed = await researchProperty(address, city || '', state || '', zip || '');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[DealUW] researchProperty threw:', msg);
+      return NextResponse.json({
+        available: false, error: msg, fallback: 'manual', debug: 'research_threw',
+      });
+    }
     console.log('[DealUW] Property lookup result:', parsed ? 'got data' : 'null/undefined', typeof parsed);
 
     if (!parsed || typeof parsed !== 'object') {
@@ -19,6 +28,8 @@ export async function POST(req: NextRequest) {
         available: false,
         error: 'lookup_failed',
         fallback: 'manual',
+        debug_parsed: String(parsed),
+        debug_type: typeof parsed,
       });
     }
 
