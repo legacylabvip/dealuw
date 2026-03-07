@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { researchProperty } from '@/lib/webSearch';
 
+export const maxDuration = 60; // Web search can take 15-60s
+
 export async function POST(req: NextRequest) {
   try {
     const { address, city, state, zip } = await req.json();

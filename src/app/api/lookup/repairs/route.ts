@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   // Redirect to the main estimate-repairs route which handles both photo and algorithmic
   const body = await req.json();
