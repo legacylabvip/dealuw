@@ -89,11 +89,15 @@ export function filterComps(subject, rawComps, referenceDate = new Date()) {
       }
     }
 
-    // Rule 4 — BUILD DATE: within +/- 10 years
+    // Rule 4 — BUILD DATE: within +/- 10 years (relaxed for older homes)
     if (subject.year_built && comp.year_built) {
       const diff = Math.abs(subject.year_built - comp.year_built);
-      if (diff > COMP_RULES.maxYearBuiltDifference) {
-        reasons.push(`Year built difference: ${diff} years (max ${COMP_RULES.maxYearBuiltDifference})`);
+      // For homes built before 1960, use 30-year tolerance (older neighborhoods have mixed eras)
+      const maxDiff = (subject.year_built < 1960 || comp.year_built < 1960) ? 30 : COMP_RULES.maxYearBuiltDifference;
+      if (diff > maxDiff) {
+        reasons.push(`Year built difference: ${diff} years (max ${maxDiff})`);
+      } else if (diff > COMP_RULES.maxYearBuiltDifference) {
+        warnings.push(`Year built difference: ${diff} years (relaxed for older homes)`);
       }
     }
 
