@@ -40,7 +40,7 @@ async function callAnthropicWebSearch(prompt: string): Promise<{ text: string; p
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-5-20250514',
+        model: 'claude-sonnet-4-5-20250929',
         max_tokens: 16000,
         system: 'You are a real estate data lookup assistant. You MUST respond with ONLY valid JSON — no explanations, no markdown, no prose. If you cannot find exact data, use your best estimates based on what you find. Never say "I could not find" — always return the requested JSON structure with your best available data.',
         tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
