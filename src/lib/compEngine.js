@@ -54,13 +54,12 @@ export function filterComps(subject, rawComps, referenceDate = new Date()) {
     const daysOld = comp.days_old != null ? comp.days_old : daysBetween(comp.sale_date, referenceDate);
     const compWithAge = { ...comp, days_old: daysOld };
 
-    // Rule 1 — AGE: must be within 180 days
-    if (daysOld > COMP_RULES.maxAge) {
-      if (comp.force_include) {
-        warnings.push(`Sold ${daysOld} days ago (max ${COMP_RULES.maxAge}) — force-included, will apply 10-20% ARV reduction`);
-      } else {
-        reasons.push(`Sold ${daysOld} days ago (max ${COMP_RULES.maxAge})`);
-      }
+    // Rule 1 — AGE: prefer within 180 days, hard cutoff at 365
+    if (daysOld > 365) {
+      reasons.push(`Sold ${daysOld} days ago (max 365)`);
+    } else if (daysOld > COMP_RULES.maxAge) {
+      // 180-365 days: allow with warning (penalty applied in adjustComps)
+      warnings.push(`Sold ${daysOld} days ago (ideal < ${COMP_RULES.maxAge}) — aging penalty will apply`);
     }
 
     // Rule 2 — SQUARE FOOTAGE: within +/- 250 sqft
@@ -73,14 +72,20 @@ export function filterComps(subject, rawComps, referenceDate = new Date()) {
 
     // Rule 3 — PROPERTY TYPE: must match (normalize single-family variants)
     if (subject.property_type && comp.property_type) {
-      const singleFamilyTypes = ['ranch', '2-story', 'split-level', 'historic', 'single family', 'single-family', 'sfr', 'house', 'detached', 'bungalow', 'cape cod', 'colonial', 'craftsman', 'cottage', 'tudor', 'victorian', 'residential'];
-      const subType = subject.property_type.toLowerCase();
-      const compType = comp.property_type.toLowerCase();
-      const subIsSF = singleFamilyTypes.includes(subType);
-      const compIsSF = singleFamilyTypes.includes(compType);
-      // If both are single-family variants, they match
-      if (!(subType === compType || (subIsSF && compIsSF))) {
-        reasons.push(`Type mismatch: ${comp.property_type} vs ${subject.property_type}`);
+      const subType = subject.property_type.toLowerCase().trim();
+      const compType = comp.property_type.toLowerCase().trim();
+      // If types match exactly, skip
+      if (subType !== compType) {
+        const isSingleFamily = (t) => {
+          // Check against known single-family keywords
+          const sfKeywords = ['ranch', '2-story', 'split-level', 'historic', 'single family', 'single-family',
+            'sfr', 'house', 'detached', 'bungalow', 'cape cod', 'colonial', 'craftsman', 'cottage',
+            'tudor', 'victorian', 'residential', 'single'];
+          return sfKeywords.some(kw => t.includes(kw) || kw.includes(t));
+        };
+        if (!(isSingleFamily(subType) && isSingleFamily(compType))) {
+          reasons.push(`Type mismatch: ${comp.property_type} vs ${subject.property_type}`);
+        }
       }
     }
 
@@ -257,9 +262,19 @@ export function adjustComps(subject, qualifiedComps, estimatedArv = null) {
       });
     }
 
-    // AGE PENALTY (for comps 120-180 days old)
+    // AGE PENALTY
     const daysOld = comp.days_old || 0;
-    if (daysOld >= COMP_RULES.agingThreshold && daysOld <= COMP_RULES.maxAge) {
+    if (daysOld > COMP_RULES.maxAge) {
+      // 180-365 days: apply -10% to -20% based on age
+      const pct = daysOld > 270 ? 0.15 : 0.10;
+      const penalty = -(adjustedPrice * pct);
+      adjustedPrice += penalty;
+      adjustments.push({
+        type: 'aging_penalty',
+        amount: penalty,
+        reason: `Aging comp penalty (${daysOld} days, over 180): -${Math.round(pct * 100)}%`,
+      });
+    } else if (daysOld >= COMP_RULES.agingThreshold) {
       // 150-180 days: apply -5%
       const penalty = -(adjustedPrice * COMP_RULES.agingPenalty);
       adjustedPrice += penalty;
@@ -268,8 +283,8 @@ export function adjustComps(subject, qualifiedComps, estimatedArv = null) {
         amount: penalty,
         reason: `Aging comp penalty (${daysOld} days, 150+ threshold): -5%`,
       });
-    } else if (daysOld >= COMP_RULES.agingWarningThreshold && daysOld < COMP_RULES.agingThreshold) {
-      // 120-150 days: flag only, no adjustment
+    } else if (daysOld >= COMP_RULES.agingWarningThreshold) {
+      // 120-150 days: flag only
       adjustments.push({
         type: 'aging_warning',
         amount: 0,
