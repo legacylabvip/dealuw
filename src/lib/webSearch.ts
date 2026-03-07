@@ -47,6 +47,7 @@ async function callAnthropicWebSearch(prompt: string): Promise<{ text: string; p
 
     if (!response.ok) {
       const errorBody = await response.text();
+      console.error('[DealUW] Anthropic API error:', response.status, errorBody);
       throw new Error(`Anthropic API error ${response.status}: ${errorBody}`);
     }
 
@@ -54,12 +55,16 @@ async function callAnthropicWebSearch(prompt: string): Promise<{ text: string; p
       content: { type: string; text?: string }[];
     };
 
+    console.log('[DealUW] Anthropic response blocks:', aiResponse.content?.map((b: { type: string }) => b.type));
+
     const textContent = aiResponse.content
       .filter((block: { type: string }) => block.type === 'text')
       .map((block: { text?: string }) => block.text ?? '')
       .join('\n');
 
+    console.log('[DealUW] Extracted text length:', textContent.length, 'preview:', textContent.substring(0, 200));
     const parsed = extractJSON(textContent);
+    console.log('[DealUW] Parsed result:', parsed ? 'success' : 'null');
     return { text: textContent, parsed };
   } finally {
     clearTimeout(timeout);

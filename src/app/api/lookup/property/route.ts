@@ -10,7 +10,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Address is required' }, { status: 400 });
     }
 
+    console.log('[DealUW] Property lookup request:', { address, city, state, zip });
     const parsed = await researchProperty(address, city || '', state || '', zip || '');
+    console.log('[DealUW] Property lookup result:', parsed ? 'got data' : 'null/undefined', typeof parsed);
 
     if (!parsed || typeof parsed !== 'object') {
       return NextResponse.json({
@@ -52,6 +54,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ available: true, property, source: 'web_search' });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Property lookup failed';
+    console.error('[DealUW] Property lookup error:', message);
     return NextResponse.json({ available: false, error: message, fallback: 'manual' });
   }
 }
