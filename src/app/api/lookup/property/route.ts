@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { researchProperty, debugLastCall } from '@/lib/webSearch';
+import { researchProperty } from '@/lib/webSearch';
 
 export const maxDuration = 60; // Web search can take 15-60s
 
@@ -10,29 +10,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Address is required' }, { status: 400 });
     }
 
-    console.log('[DealUW] Property lookup request:', { address, city, state, zip });
-    let parsed: unknown;
-    try {
-      parsed = await researchProperty(address, city || '', state || '', zip || '');
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error('[DealUW] researchProperty threw:', msg);
-      return NextResponse.json({
-        available: false, error: msg, fallback: 'manual', debug: 'research_threw',
-      });
-    }
-    console.log('[DealUW] Property lookup result:', parsed ? 'got data' : 'null/undefined', typeof parsed);
+    const parsed = await researchProperty(address, city || '', state || '', zip || '');
 
     if (!parsed || typeof parsed !== 'object') {
-      const debug = debugLastCall();
       return NextResponse.json({
         available: false,
         error: 'lookup_failed',
         fallback: 'manual',
-        debug_parsed: String(parsed),
-        debug_type: typeof parsed,
-        debug_raw_text: debug.text?.substring(0, 500),
-        debug_api_status: debug.status,
       });
     }
 

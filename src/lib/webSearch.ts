@@ -1,9 +1,6 @@
 // DealUW Web Search — Direct Anthropic API with web search for property/comp research
 // Replaces the Zoria/Mission Control dependency for production deployment
 
-let _lastCallDebug = { text: '', status: 0 };
-export function debugLastCall() { return _lastCallDebug; }
-
 function extractJSON(text: string): unknown {
   if (!text) return null;
   try { return JSON.parse(text); } catch { /* continue */ }
@@ -67,7 +64,6 @@ async function callAnthropicWebSearch(prompt: string): Promise<{ text: string; p
       .join('\n');
 
     console.log('[DealUW] Text length:', textContent.length, 'preview:', textContent.substring(0, 300));
-    _lastCallDebug = { text: textContent, status: response.status };
     const parsed = extractJSON(textContent);
     console.log('[DealUW] Parsed:', parsed ? 'success' : 'null');
     return { text: textContent, parsed };
