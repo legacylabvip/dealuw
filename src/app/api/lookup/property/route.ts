@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { researchProperty } from '@/lib/webSearch';
+import { researchProperty, debugLastCall } from '@/lib/webSearch';
 
 export const maxDuration = 60; // Web search can take 15-60s
 
@@ -24,12 +24,15 @@ export async function POST(req: NextRequest) {
     console.log('[DealUW] Property lookup result:', parsed ? 'got data' : 'null/undefined', typeof parsed);
 
     if (!parsed || typeof parsed !== 'object') {
+      const debug = debugLastCall();
       return NextResponse.json({
         available: false,
         error: 'lookup_failed',
         fallback: 'manual',
         debug_parsed: String(parsed),
         debug_type: typeof parsed,
+        debug_raw_text: debug.text?.substring(0, 500),
+        debug_api_status: debug.status,
       });
     }
 
