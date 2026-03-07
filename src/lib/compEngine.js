@@ -62,11 +62,15 @@ export function filterComps(subject, rawComps, referenceDate = new Date()) {
       warnings.push(`Sold ${daysOld} days ago (ideal < ${COMP_RULES.maxAge}) — aging penalty will apply`);
     }
 
-    // Rule 2 — SQUARE FOOTAGE: within +/- 250 sqft
+    // Rule 2 — SQUARE FOOTAGE: within +/- 20% or 400 sqft (whichever is larger)
     if (subject.sqft && comp.sqft) {
       const diff = Math.abs(subject.sqft - comp.sqft);
-      if (diff > COMP_RULES.maxSqftDifference) {
-        reasons.push(`Sqft difference: ${diff} (max ${COMP_RULES.maxSqftDifference})`);
+      const pctThreshold = Math.round(subject.sqft * 0.20);
+      const maxDiff = Math.max(pctThreshold, 400);
+      if (diff > maxDiff) {
+        reasons.push(`Sqft difference: ${diff} (max ${maxDiff})`);
+      } else if (diff > COMP_RULES.maxSqftDifference) {
+        warnings.push(`Sqft difference: ${diff} sqft (outside ideal ${COMP_RULES.maxSqftDifference}, within tolerance)`);
       }
     }
 
