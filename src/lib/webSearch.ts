@@ -27,7 +27,6 @@ function extractJSON(text: string): unknown {
 async function callAnthropicWebSearch(prompt: string): Promise<{ text: string; parsed: unknown }> {
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY not configured');
-  console.log('[DealUW] API key present, length:', apiKey.length, 'starts with:', apiKey.substring(0, 10));
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 60000);
@@ -41,9 +40,10 @@ async function callAnthropicWebSearch(prompt: string): Promise<{ text: string; p
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 2000,
-        tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+        model: 'claude-sonnet-4-5-20250514',
+        max_tokens: 16000,
+        system: 'You are a real estate data lookup assistant. You MUST respond with ONLY valid JSON — no explanations, no markdown, no prose. If you cannot find exact data, use your best estimates based on what you find. Never say "I could not find" — always return the requested JSON structure with your best available data.',
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
         messages: [{ role: 'user', content: prompt }],
       }),
       signal: controller.signal,
@@ -59,17 +59,17 @@ async function callAnthropicWebSearch(prompt: string): Promise<{ text: string; p
       content: { type: string; text?: string }[];
     };
 
-    console.log('[DealUW] Anthropic response blocks:', aiResponse.content?.map((b: { type: string }) => b.type));
+    console.log('[DealUW] Response blocks:', aiResponse.content?.map((b: { type: string }) => b.type));
 
     const textContent = aiResponse.content
       .filter((block: { type: string }) => block.type === 'text')
       .map((block: { text?: string }) => block.text ?? '')
       .join('\n');
 
-    console.log('[DealUW] Extracted text length:', textContent.length, 'preview:', textContent.substring(0, 200));
+    console.log('[DealUW] Text length:', textContent.length, 'preview:', textContent.substring(0, 300));
     _lastCallDebug = { text: textContent, status: response.status };
     const parsed = extractJSON(textContent);
-    console.log('[DealUW] Parsed result:', parsed ? 'success' : 'null');
+    console.log('[DealUW] Parsed:', parsed ? 'success' : 'null');
     return { text: textContent, parsed };
   } finally {
     clearTimeout(timeout);
