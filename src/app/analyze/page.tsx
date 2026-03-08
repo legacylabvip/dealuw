@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import Navbar from '@/components/Navbar';
+import AddressAutocomplete from '@/components/AddressAutocomplete';
 import { filterComps, adjustComps, calculateARV, type AdjustedComp, type ARVResult, type Adjustment } from '@/lib/compEngine';
 import type { RepairEstimate, RepairLineItem } from '@/lib/repairEstimator';
 import type { AllOffers, CashOffer, OwnerFinanceOffer, NovationOffer, NegotiationGuide } from '@/lib/offerCalculator';
@@ -704,10 +705,19 @@ export default function AnalyzePage() {
               {/* Address */}
               <div className="rounded-xl border border-border bg-card p-6">
                 <h3 className="text-sm font-semibold text-accent mb-4">Property Address</h3>
-                <input
-                  type="text" placeholder="Enter property address..."
+                <AddressAutocomplete
                   value={subject.address}
-                  onChange={e => setSubject(s => ({ ...s, address: e.target.value }))}
+                  onChange={v => setSubject(s => ({ ...s, address: v }))}
+                  onSelect={result => {
+                    setSubject(s => ({
+                      ...s,
+                      address: result.address,
+                      city: result.city,
+                      state: result.state,
+                      zip: result.zip,
+                    }));
+                  }}
+                  placeholder="Enter property address..."
                   className="w-full rounded-xl border border-border bg-background px-5 py-4 text-lg text-foreground placeholder:text-muted/50 focus:border-accent focus:outline-none transition-colors mb-3"
                 />
                 <div className="grid grid-cols-3 gap-3">
@@ -738,9 +748,9 @@ export default function AnalyzePage() {
                   onClick={() => document.getElementById('photo-input')?.click()}
                   className="rounded-lg border-2 border-dashed border-border bg-background/30 p-4 text-center cursor-pointer hover:border-accent/50 transition-colors"
                 >
-                  <input id="photo-input" type="file" accept="image/jpeg,image/png,image/heic,image/heif" multiple className="hidden" onChange={e => { if (e.target.files) handlePhotoUpload(e.target.files); e.target.value = ''; }} />
+                  <input id="photo-input" type="file" accept="image/jpeg,image/png,image/heic,image/heif,image/webp,image/gif,image/bmp,image/tiff,image/avif" multiple className="hidden" onChange={e => { if (e.target.files) handlePhotoUpload(e.target.files); e.target.value = ''; }} />
                   <p className="text-sm text-muted">Drop photos or click to browse</p>
-                  <p className="text-xs text-muted/50 mt-1">JPG, PNG, HEIC &middot; Max 10</p>
+                  <p className="text-xs text-muted/50 mt-1">JPG, PNG, WebP, HEIC, GIF, AVIF &middot; Max 10</p>
                 </div>
                 {photos.length > 0 && (
                   <div className="mt-3 flex flex-wrap gap-2">
