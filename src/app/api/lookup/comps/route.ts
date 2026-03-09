@@ -40,9 +40,20 @@ export async function POST(req: NextRequest) {
     const rawComps = compsArray.map(normalizeComp);
     const filtered = filterComps(subject, rawComps);
 
+    // Ensure at least 3 qualified comps — promote disqualified if needed
+    let qualified = filtered.qualified;
+    let disqualified = filtered.disqualified;
+    if (qualified.length < 3 && disqualified.length > 0) {
+      const needed = 3 - qualified.length;
+      const promoted = disqualified.slice(0, needed);
+      qualified = [...qualified, ...promoted];
+      disqualified = disqualified.slice(needed);
+      console.log(`[DealUW] Promoted ${promoted.length} disqualified comps to meet 3-comp minimum`);
+    }
+
     return NextResponse.json({
       available: true, comps: rawComps,
-      qualified: filtered.qualified, disqualified: filtered.disqualified,
+      qualified, disqualified,
       raw_count: rawComps.length, source: 'web_search',
     });
   } catch (error: unknown) {

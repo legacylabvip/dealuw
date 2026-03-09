@@ -108,6 +108,16 @@ Return ONLY a JSON object in this exact format, no other text:
   return parsed;
 }
 
+function extractCompsArray(parsed: unknown): Record<string, unknown>[] {
+  if (Array.isArray(parsed) && parsed.length > 0) return parsed as Record<string, unknown>[];
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const obj = parsed as Record<string, unknown>;
+    const inner = obj.comps || obj.results || obj.comparables || obj.sales || obj.data;
+    if (Array.isArray(inner) && inner.length > 0) return inner as Record<string, unknown>[];
+  }
+  return [];
+}
+
 export async function researchComps(
   address: string, city: string, state: string, zip: string,
   subject: Record<string, unknown>
@@ -160,39 +170,65 @@ If you cannot find exact matches, broaden your search to the full ${zip} zip cod
   const { text, parsed } = await callAnthropicWebSearch(prompt);
   console.log('[DealUW] Primary search result:', parsed ? `${Array.isArray(parsed) ? parsed.length : 'object'} items` : 'null', 'raw length:', text.length);
 
-  if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+  let results = extractCompsArray(parsed);
 
-  // If parsed is an object with comps inside
-  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-    const obj = parsed as Record<string, unknown>;
-    const arr = obj.comps || obj.results || obj.comparables || obj.sales || obj.data;
-    if (Array.isArray(arr) && arr.length > 0) return arr;
-  }
-
-  // Fallback: broader search
-  const fallbackPrompt = `Search for recently sold homes in zip code ${zip || 'near ' + city + ' ' + state}.
+  // If we got fewer than 3, run a broader fallback search
+  if (results.length < 3) {
+    console.log(`[DealUW] Only ${results.length} comps from primary search, running broader fallback`);
+    const fallbackPrompt = `Search for recently sold homes in zip code ${zip || 'near ' + city + ' ' + state}.
 
 Search Zillow for "recently sold homes ${zip || city + ' ' + state}" and Redfin for "sold homes ${zip || city + ' ' + state}".
 
-I need homes that sold in the last 12 months. Any size, any style, any age.
+I need at least 5 comparable sales. Homes that sold in the last 12 months. Similar to ${sqft} sqft, ${propertyType} style.
+If you can't find exact matches, include any recently sold homes nearby.
 
-Find as many as you can, up to 10. Return ONLY a JSON array:
+Find at least 5, up to 10. Return ONLY a JSON array:
 ${compsJsonFormat}
 
-Return whatever sold homes you CAN find. Some data is better than none. Do NOT return an empty array.`;
+You MUST return at least 3 results. Broaden your search area if needed. Do NOT return an empty array.`;
 
-  console.log('[DealUW] Running fallback comp search');
-  const fallback = await callAnthropicWebSearch(fallbackPrompt);
-  console.log('[DealUW] Fallback result:', fallback.parsed ? `${Array.isArray(fallback.parsed) ? fallback.parsed.length : 'object'} items` : 'null');
+    const fallback = await callAnthropicWebSearch(fallbackPrompt);
+    const fallbackResults = extractCompsArray(fallback.parsed);
+    console.log('[DealUW] Fallback result:', fallbackResults.length, 'comps');
 
-  if (Array.isArray(fallback.parsed) && fallback.parsed.length > 0) return fallback.parsed;
-
-  // Try to extract from fallback object
-  if (fallback.parsed && typeof fallback.parsed === 'object' && !Array.isArray(fallback.parsed)) {
-    const obj = fallback.parsed as Record<string, unknown>;
-    const arr = obj.comps || obj.results || obj.comparables || obj.sales || obj.data;
-    if (Array.isArray(arr) && arr.length > 0) return arr;
+    // Merge: add any new addresses we didn't already have
+    const existingAddresses = new Set(results.map((r: Record<string, unknown>) => String(r.address || '').toLowerCase()));
+    for (const comp of fallbackResults) {
+      const addr = String(comp.address || '').toLowerCase();
+      if (!existingAddresses.has(addr)) {
+        results.push(comp);
+        existingAddresses.add(addr);
+      }
+    }
   }
 
-  return parsed;
+  // If still fewer than 3, try one more time with even broader search
+  if (results.length < 3) {
+    console.log(`[DealUW] Still only ${results.length} comps, running last-resort search`);
+    const lastResortPrompt = `Search for ANY recently sold homes near ${city}, ${state} ${zip}.
+
+Search for "sold homes ${city} ${state}" on Zillow and Redfin.
+
+Any size, any style, any age. Sold in the last 12 months.
+I need at least 5 results. Return ONLY a JSON array:
+${compsJsonFormat}
+
+This is critical — you MUST return at least 3 results with real addresses and sale prices.`;
+
+    const lastResort = await callAnthropicWebSearch(lastResortPrompt);
+    const lastResults = extractCompsArray(lastResort.parsed);
+    console.log('[DealUW] Last-resort result:', lastResults.length, 'comps');
+
+    const existingAddresses = new Set(results.map((r: Record<string, unknown>) => String(r.address || '').toLowerCase()));
+    for (const comp of lastResults) {
+      const addr = String(comp.address || '').toLowerCase();
+      if (!existingAddresses.has(addr)) {
+        results.push(comp);
+        existingAddresses.add(addr);
+      }
+    }
+  }
+
+  console.log('[DealUW] Total comps found:', results.length);
+  return results.length > 0 ? results : parsed;
 }
