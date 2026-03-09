@@ -161,6 +161,9 @@ export default function AnalyzePage() {
   // Force-included comps (promoted from disqualified)
   const [forcedCompAddresses, setForcedCompAddresses] = useState<Set<string>>(new Set());
 
+  // Track subject edits to trigger comp recalc
+  const [subjectVersion, setSubjectVersion] = useState(0);
+
   // ARV override
   const [arvOverride, setArvOverride] = useState<number | null>(null);
 
@@ -353,7 +356,7 @@ export default function AnalyzePage() {
       confidence: arvResult?.confidence ?? 'low',
     } : prev);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [manualComps, forcedCompAddresses, step]);
+  }, [manualComps, forcedCompAddresses, subjectVersion, step]);
 
   // ─── Look Up Property ────────────────────────────────────────
 
@@ -712,6 +715,7 @@ export default function AnalyzePage() {
     const updated = { ...report.subject, [field]: value };
     setSubject(updated);
     setReport({ ...report, subject: updated });
+    setSubjectVersion(v => v + 1);
   };
 
   // ═════════════════════════════════════════════════════════════════
