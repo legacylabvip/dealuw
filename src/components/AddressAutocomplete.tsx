@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 interface AddressResult {
   address: string;
@@ -17,43 +17,25 @@ interface Props {
   className?: string;
 }
 
-declare global {
-  interface Window {
-    google?: typeof google;
-    _googlePlacesLoaded?: boolean;
-    _googlePlacesCallbacks?: (() => void)[];
-  }
-}
-
 function loadGooglePlaces(apiKey: string): Promise<void> {
-  if (window._googlePlacesLoaded && window.google?.maps?.places) {
+  if (window.google?.maps?.places) {
     return Promise.resolve();
   }
 
   return new Promise((resolve, reject) => {
-    if (!window._googlePlacesCallbacks) {
-      window._googlePlacesCallbacks = [];
-
-      const script = document.createElement('script');
-      script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places&callback=_initGooglePlaces`;
-      script.async = true;
-      script.defer = true;
-      script.onerror = () => reject(new Error('Failed to load Google Places'));
-
-      (window as unknown as Record<string, () => void>)._initGooglePlaces = () => {
-        window._googlePlacesLoaded = true;
-        window._googlePlacesCallbacks?.forEach(cb => cb());
-        window._googlePlacesCallbacks = [];
-      };
-
-      document.head.appendChild(script);
+    // Already loading
+    const existingScript = document.querySelector('script[src*="maps.googleapis.com"]');
+    if (existingScript) {
+      existingScript.addEventListener('load', () => resolve());
+      return;
     }
 
-    if (window._googlePlacesLoaded) {
-      resolve();
-    } else {
-      window._googlePlacesCallbacks!.push(resolve);
-    }
+    const script = document.createElement('script');
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places`;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Failed to load Google Places'));
+    document.head.appendChild(script);
   });
 }
 
@@ -78,37 +60,28 @@ function parsePlace(place: google.maps.places.PlaceResult): AddressResult {
 export default function AddressAutocomplete({ value, onChange, onSelect, placeholder, className }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const autocompleteRef = useRef<google.maps.places.Autocomplete | null>(null);
-  const [placesReady, setPlacesReady] = useState(false);
+  const [ready, setReady] = useState(false);
+  const lastExternalValue = useRef(value);
 
-  // Load Google Places script on mount
+  // Load Google Places on mount
   useEffect(() => {
+    let cancelled = false;
     fetch('/api/config/google-places')
       .then(r => r.json())
       .then(d => {
-        if (d.apiKey) {
+        if (!cancelled && d.apiKey) {
           return loadGooglePlaces(d.apiKey.trim());
         }
       })
-      .then(() => setPlacesReady(true))
-      .catch(() => {
-        // Places unavailable — input works as plain text field
-      });
+      .then(() => { if (!cancelled) setReady(true); })
+      .catch(() => {});
+    return () => { cancelled = true; };
   }, []);
 
-  const handlePlaceChanged = useCallback(() => {
-    const place = autocompleteRef.current?.getPlace();
-    if (!place?.address_components) return;
-
-    const result = parsePlace(place);
-    // Update the parent with parsed address parts
-    onChange(result.address);
-    onSelect(result);
-  }, [onChange, onSelect]);
-
-  // Initialize autocomplete when ready
+  // Initialize autocomplete
   useEffect(() => {
-    if (!placesReady || !inputRef.current || !window.google?.maps?.places) return;
-    if (autocompleteRef.current) return;
+    if (!ready || !inputRef.current || autocompleteRef.current) return;
+    if (!window.google?.maps?.places) return;
 
     const ac = new window.google.maps.places.Autocomplete(inputRef.current, {
       types: ['address'],
@@ -116,19 +89,29 @@ export default function AddressAutocomplete({ value, onChange, onSelect, placeho
       fields: ['address_components', 'formatted_address'],
     });
 
-    ac.addListener('place_changed', handlePlaceChanged);
+    ac.addListener('place_changed', () => {
+      const place = ac.getPlace();
+      if (!place?.address_components) return;
+      const result = parsePlace(place);
+      // Update input to show just the street address
+      if (inputRef.current) {
+        inputRef.current.value = result.address;
+      }
+      lastExternalValue.current = result.address;
+      onChange(result.address);
+      onSelect(result);
+    });
+
     autocompleteRef.current = ac;
+  }, [ready, onChange, onSelect]);
 
-    return () => {
-      google.maps.event.clearInstanceListeners(ac);
-      autocompleteRef.current = null;
-    };
-  }, [placesReady, handlePlaceChanged]);
-
-  // Sync React value to DOM input (Google may have changed it)
+  // Only sync from parent if the value was changed externally (not by typing)
   useEffect(() => {
-    if (inputRef.current && inputRef.current.value !== value) {
-      inputRef.current.value = value;
+    if (value !== lastExternalValue.current) {
+      lastExternalValue.current = value;
+      if (inputRef.current && document.activeElement !== inputRef.current) {
+        inputRef.current.value = value;
+      }
     }
   }, [value]);
 
@@ -138,7 +121,10 @@ export default function AddressAutocomplete({ value, onChange, onSelect, placeho
       type="text"
       placeholder={placeholder || 'Enter property address...'}
       defaultValue={value}
-      onChange={e => onChange(e.target.value)}
+      onChange={e => {
+        lastExternalValue.current = e.target.value;
+        onChange(e.target.value);
+      }}
       className={className}
       autoComplete="off"
     />
