@@ -30,7 +30,7 @@ function loadGooglePlaces(apiKey: string): Promise<void> {
     return Promise.resolve();
   }
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     if (!window._googlePlacesCallbacks) {
       window._googlePlacesCallbacks = [];
 
@@ -38,6 +38,7 @@ function loadGooglePlaces(apiKey: string): Promise<void> {
       script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places&callback=_initGooglePlaces`;
       script.async = true;
       script.defer = true;
+      script.onerror = () => reject(new Error('Failed to load Google Places'));
 
       (window as unknown as Record<string, () => void>)._initGooglePlaces = () => {
         window._googlePlacesLoaded = true;
@@ -77,36 +78,39 @@ function parsePlace(place: google.maps.places.PlaceResult): AddressResult {
 export default function AddressAutocomplete({ value, onChange, onSelect, placeholder, className }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const autocompleteRef = useRef<google.maps.places.Autocomplete | null>(null);
-  const [apiKey, setApiKey] = useState<string | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  const [placesReady, setPlacesReady] = useState(false);
 
-  // Fetch API key from server
+  // Load Google Places script on mount
   useEffect(() => {
     fetch('/api/config/google-places')
       .then(r => r.json())
-      .then(d => { if (d.apiKey) setApiKey(d.apiKey); })
-      .catch(() => {});
+      .then(d => {
+        if (d.apiKey) {
+          return loadGooglePlaces(d.apiKey.trim());
+        }
+      })
+      .then(() => setPlacesReady(true))
+      .catch(() => {
+        // Places unavailable — input works as plain text field
+      });
   }, []);
-
-  // Load Google Places script
-  useEffect(() => {
-    if (!apiKey) return;
-    loadGooglePlaces(apiKey).then(() => setLoaded(true));
-  }, [apiKey]);
 
   const handlePlaceChanged = useCallback(() => {
     const place = autocompleteRef.current?.getPlace();
     if (!place?.address_components) return;
 
     const result = parsePlace(place);
+    // Update the parent with parsed address parts
+    onChange(result.address);
     onSelect(result);
-  }, [onSelect]);
+  }, [onChange, onSelect]);
 
-  // Initialize autocomplete
+  // Initialize autocomplete when ready
   useEffect(() => {
-    if (!loaded || !inputRef.current || autocompleteRef.current) return;
+    if (!placesReady || !inputRef.current || !window.google?.maps?.places) return;
+    if (autocompleteRef.current) return;
 
-    const ac = new window.google!.maps.places.Autocomplete(inputRef.current, {
+    const ac = new window.google.maps.places.Autocomplete(inputRef.current, {
       types: ['address'],
       componentRestrictions: { country: 'us' },
       fields: ['address_components', 'formatted_address'],
@@ -119,16 +123,24 @@ export default function AddressAutocomplete({ value, onChange, onSelect, placeho
       google.maps.event.clearInstanceListeners(ac);
       autocompleteRef.current = null;
     };
-  }, [loaded, handlePlaceChanged]);
+  }, [placesReady, handlePlaceChanged]);
+
+  // Sync React value to DOM input (Google may have changed it)
+  useEffect(() => {
+    if (inputRef.current && inputRef.current.value !== value) {
+      inputRef.current.value = value;
+    }
+  }, [value]);
 
   return (
     <input
       ref={inputRef}
       type="text"
       placeholder={placeholder || 'Enter property address...'}
-      value={value}
+      defaultValue={value}
       onChange={e => onChange(e.target.value)}
       className={className}
+      autoComplete="off"
     />
   );
 }
