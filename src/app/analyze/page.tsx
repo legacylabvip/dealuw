@@ -158,6 +158,9 @@ export default function AnalyzePage() {
   const [showCompForm, setShowCompForm] = useState(false);
   const [compDraft, setCompDraft] = useState<ManualComp>({ ...emptyManualComp });
 
+  // Force-included comps (promoted from disqualified)
+  const [forcedCompAddresses, setForcedCompAddresses] = useState<Set<string>>(new Set());
+
   // ARV override
   const [arvOverride, setArvOverride] = useState<number | null>(null);
 
@@ -280,7 +283,19 @@ export default function AnalyzePage() {
     setManualComps(prev => prev.filter((_, i) => i !== idx));
   };
 
-  // Re-run comp engine when manual comps change (in report view)
+  const promoteComp = (address: string) => {
+    setForcedCompAddresses(prev => new Set([...prev, address.toLowerCase()]));
+  };
+
+  const demoteComp = (address: string) => {
+    setForcedCompAddresses(prev => {
+      const next = new Set(prev);
+      next.delete(address.toLowerCase());
+      return next;
+    });
+  };
+
+  // Re-run comp engine when manual comps or forced comps change (in report view)
   useEffect(() => {
     if (step !== 'report' || !report) return;
     if (manualComps.length === 0 && report.rawComps.length === 0) return;
@@ -312,20 +327,33 @@ export default function AnalyzePage() {
     const allRaw = [...report.rawComps.filter((c: Record<string, unknown>) => c.source !== 'manual'), ...manualAsRaw];
     const sub = report.subject;
     const filtered = filterComps(sub, allRaw);
-    const adjusted = adjustComps(sub, filtered.qualified);
+
+    // Move force-included comps from disqualified to qualified
+    const finalQualified = [...filtered.qualified];
+    const finalDisqualified: Record<string, unknown>[] = [];
+    for (const comp of filtered.disqualified) {
+      const addr = String(comp.address || '').toLowerCase();
+      if (forcedCompAddresses.has(addr)) {
+        finalQualified.push({ ...comp, force_included: true });
+      } else {
+        finalDisqualified.push(comp);
+      }
+    }
+
+    const adjusted = adjustComps(sub, finalQualified);
     const arvResult = adjusted.length > 0 ? calculateARV(sub, adjusted) : null;
 
     setReport(prev => prev ? {
       ...prev,
       rawComps: allRaw,
-      qualified: filtered.qualified,
-      disqualified: filtered.disqualified,
+      qualified: finalQualified,
+      disqualified: finalDisqualified,
       adjusted,
       arvResult,
       confidence: arvResult?.confidence ?? 'low',
     } : prev);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [manualComps, step]);
+  }, [manualComps, forcedCompAddresses, step]);
 
   // ─── Look Up Property ────────────────────────────────────────
 
@@ -936,9 +964,17 @@ export default function AnalyzePage() {
             {/* Comp cards */}
             {report.adjusted.length > 0 && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                {report.adjusted.slice(0, 6).map((comp, i) => (
-                  <CompCard key={i} comp={comp} />
-                ))}
+                {report.adjusted.slice(0, 6).map((comp, i) => {
+                  const isForced = forcedCompAddresses.has(String(comp.address).toLowerCase());
+                  return (
+                    <CompCard
+                      key={i}
+                      comp={comp}
+                      forceIncluded={isForced}
+                      onRemove={isForced ? () => demoteComp(String(comp.address)) : undefined}
+                    />
+                  );
+                })}
               </div>
             )}
 
@@ -951,10 +987,19 @@ export default function AnalyzePage() {
                 {showDqComps && (
                   <div className="mt-2 space-y-2">
                     {report.disqualified.map((c: Record<string, unknown>, i: number) => (
-                      <div key={i} className="rounded-lg border border-pass/20 bg-pass/5 px-4 py-2 text-xs">
-                        <span className="text-foreground font-medium">{String(c.address)}</span>
-                        <span className="text-muted ml-2">{money(c.sale_price as number)}</span>
-                        <span className="text-pass ml-2">{(c.disqualified_reasons as string[])?.join('; ')}</span>
+                      <div key={i} className="rounded-lg border border-pass/20 bg-pass/5 px-4 py-2 text-xs flex items-center justify-between gap-2">
+                        <div className="flex-1 min-w-0">
+                          <span className="text-foreground font-medium">{String(c.address)}</span>
+                          <span className="text-muted ml-2">{money(c.sale_price as number)}</span>
+                          <span className="text-muted ml-2">{Number(c.sqft) > 0 ? `${Number(c.sqft).toLocaleString()} sqft` : ''}</span>
+                          <span className="text-pass ml-2">{(c.disqualified_reasons as string[])?.join('; ')}</span>
+                        </div>
+                        <button
+                          onClick={() => promoteComp(String(c.address))}
+                          className="shrink-0 rounded-md border border-go/30 bg-go/10 px-3 py-1 text-[11px] font-semibold text-go hover:bg-go/20 transition-colors"
+                        >
+                          Include
+                        </button>
                       </div>
                     ))}
                   </div>
@@ -1387,12 +1432,19 @@ function ConfidenceBadge({ level }: { level: string }) {
   return <span className={`rounded-full border px-3 py-0.5 text-xs font-bold uppercase ${colors[level] || colors.low}`}>{level}</span>;
 }
 
-function CompCard({ comp }: { comp: AdjustedComp }) {
+function CompCard({ comp, forceIncluded, onRemove }: { comp: AdjustedComp; forceIncluded?: boolean; onRemove?: () => void }) {
   return (
-    <div className={`rounded-xl border bg-card p-4 ${comp.warnings?.length > 0 ? 'border-negotiate/30' : 'border-border'}`}>
+    <div className={`rounded-xl border bg-card p-4 ${forceIncluded ? 'border-accent/30' : comp.warnings?.length > 0 ? 'border-negotiate/30' : 'border-border'}`}>
       <div className="flex items-start justify-between mb-2">
         <p className="text-sm font-semibold text-foreground">{comp.address}</p>
-        {comp.same_subdivision && <span className="text-[10px] bg-go/10 text-go rounded-full px-2 py-0.5">Same subdivision</span>}
+        <div className="flex items-center gap-1.5">
+          {forceIncluded && (
+            <button onClick={onRemove} className="text-[10px] bg-pass/10 text-pass rounded-full px-2 py-0.5 hover:bg-pass/20 transition-colors">
+              Exclude
+            </button>
+          )}
+          {comp.same_subdivision && <span className="text-[10px] bg-go/10 text-go rounded-full px-2 py-0.5">Same subdivision</span>}
+        </div>
       </div>
       <div className="flex items-baseline gap-2 mb-2">
         <span className="text-muted text-xs">Sold:</span>
