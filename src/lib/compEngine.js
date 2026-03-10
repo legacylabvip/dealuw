@@ -273,8 +273,8 @@ export function adjustComps(subject, qualifiedComps, estimatedArv = null) {
     // AGE PENALTY
     const daysOld = comp.days_old || 0;
     if (daysOld > COMP_RULES.maxAge) {
-      // 180-365 days: apply -10% to -20% based on age
-      const pct = daysOld > 270 ? 0.15 : 0.10;
+      // 180-365 days: apply -5% to -15% based on age
+      const pct = daysOld > 270 ? 0.15 : 0.05;
       const penalty = -(adjustedPrice * pct);
       adjustedPrice += penalty;
       adjustments.push({
