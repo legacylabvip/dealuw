@@ -26,9 +26,9 @@ export default function RulesPage() {
         <div className="grid grid-cols-2 gap-4 mb-12">
           <RuleCard
             icon={<CalendarIcon />}
-            title="365-Day Maximum"
-            description="Comps sold within 180 days are preferred. Older comps (up to 365 days) are allowed with graduated penalties: 2% at 150 days, 5% at 180 days, and 7.5% at 270+ days."
-            value="365 days"
+            title="Graduated Aging"
+            description="Comps sold within 180 days are preferred. Older comps are allowed with graduated penalties: 2% at 150 days, 5% at 180 days, 7.5% at 270 days, and 12.5% at 365+ days."
+            value="No cutoff"
           />
           <RuleCard
             icon={<RulerIcon />}
@@ -211,7 +211,7 @@ export default function RulesPage() {
               </div>
               <div className="flex items-center justify-between text-xs">
                 <span className="text-muted">365+ days</span>
-                <span className="text-pass font-semibold">Disqualified</span>
+                <span className="text-pass font-semibold">-12.5% penalty</span>
               </div>
             </div>
           </div>

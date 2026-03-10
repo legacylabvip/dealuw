@@ -54,11 +54,8 @@ export function filterComps(subject, rawComps, referenceDate = new Date()) {
     const daysOld = comp.days_old != null ? comp.days_old : daysBetween(comp.sale_date, referenceDate);
     const compWithAge = { ...comp, days_old: daysOld };
 
-    // Rule 1 — AGE: prefer within 180 days, hard cutoff at 365
-    if (daysOld > 365) {
-      reasons.push(`Sold ${daysOld} days ago (max 365)`);
-    } else if (daysOld > COMP_RULES.maxAge) {
-      // 180-365 days: allow with warning (penalty applied in adjustComps)
+    // Rule 1 — AGE: prefer within 180 days, graduated penalties beyond
+    if (daysOld > COMP_RULES.maxAge) {
       warnings.push(`Sold ${daysOld} days ago (ideal < ${COMP_RULES.maxAge}) — aging penalty will apply`);
     }
 
@@ -272,7 +269,17 @@ export function adjustComps(subject, qualifiedComps, estimatedArv = null) {
 
     // AGE PENALTY
     const daysOld = comp.days_old || 0;
-    if (daysOld > 270) {
+    if (daysOld > 365) {
+      // 365+ days: -12.5%
+      const pct = 0.125;
+      const penalty = -(adjustedPrice * pct);
+      adjustedPrice += penalty;
+      adjustments.push({
+        type: 'aging_penalty',
+        amount: penalty,
+        reason: `Aging comp penalty (${daysOld} days, 365+): -12.5%`,
+      });
+    } else if (daysOld > 270) {
       // 270-365 days: -7.5%
       const pct = 0.075;
       const penalty = -(adjustedPrice * pct);
