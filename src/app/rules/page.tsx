@@ -26,9 +26,9 @@ export default function RulesPage() {
         <div className="grid grid-cols-2 gap-4 mb-12">
           <RuleCard
             icon={<CalendarIcon />}
-            title="180-Day Maximum"
-            description="Only comps sold within the last 180 days. Older comps get a 10-20% ARV reduction to account for market correction."
-            value="180 days"
+            title="365-Day Maximum"
+            description="Comps sold within 180 days are preferred. Older comps (up to 365 days) are allowed with graduated penalties: 2% at 150 days, 5% at 180 days, and 7.5% at 270+ days."
+            value="365 days"
           />
           <RuleCard
             icon={<RulerIcon />}
@@ -182,11 +182,11 @@ export default function RulesPage() {
               </span>
               <div>
                 <h4 className="text-sm font-semibold text-foreground">Aging Comp Penalty</h4>
-                <p className="text-xs text-muted">-5% for comps 150-180 days old</p>
+                <p className="text-xs text-muted">Graduated penalties for older comps</p>
               </div>
             </div>
             <p className="text-sm text-muted leading-relaxed">
-              Comps approaching the 180-day limit are less reliable. DealUW automatically applies a 5% penalty to comps aged 150-180 days and flags comps at 120+ days as aging.
+              Older comps are less reliable as market conditions change. DealUW applies graduated penalties based on age, with a hard cutoff at 365 days.
             </p>
             <div className="mt-4 rounded-lg bg-background border border-border px-4 py-3 space-y-1.5">
               <div className="flex items-center justify-between text-xs">
@@ -199,10 +199,18 @@ export default function RulesPage() {
               </div>
               <div className="flex items-center justify-between text-xs">
                 <span className="text-muted">150-180 days</span>
+                <span className="text-pass font-semibold">-2% penalty</span>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted">180-270 days</span>
                 <span className="text-pass font-semibold">-5% penalty</span>
               </div>
               <div className="flex items-center justify-between text-xs">
-                <span className="text-muted">180+ days</span>
+                <span className="text-muted">270-365 days</span>
+                <span className="text-pass font-semibold">-7.5% penalty</span>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted">365+ days</span>
                 <span className="text-pass font-semibold">Disqualified</span>
               </div>
             </div>
