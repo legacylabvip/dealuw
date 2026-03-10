@@ -272,24 +272,35 @@ export function adjustComps(subject, qualifiedComps, estimatedArv = null) {
 
     // AGE PENALTY
     const daysOld = comp.days_old || 0;
-    if (daysOld > COMP_RULES.maxAge) {
-      // 180-365 days: apply -5% to -15% based on age
-      const pct = daysOld > 270 ? 0.15 : 0.05;
+    if (daysOld > 270) {
+      // 270-365 days: -7.5%
+      const pct = 0.075;
       const penalty = -(adjustedPrice * pct);
       adjustedPrice += penalty;
       adjustments.push({
         type: 'aging_penalty',
         amount: penalty,
-        reason: `Aging comp penalty (${daysOld} days, over 180): -${Math.round(pct * 100)}%`,
+        reason: `Aging comp penalty (${daysOld} days, 270+): -7.5%`,
       });
-    } else if (daysOld >= COMP_RULES.agingThreshold) {
-      // 150-180 days: apply -5%
-      const penalty = -(adjustedPrice * COMP_RULES.agingPenalty);
+    } else if (daysOld > COMP_RULES.maxAge) {
+      // 180-270 days: -5%
+      const pct = 0.05;
+      const penalty = -(adjustedPrice * pct);
       adjustedPrice += penalty;
       adjustments.push({
         type: 'aging_penalty',
         amount: penalty,
-        reason: `Aging comp penalty (${daysOld} days, 150+ threshold): -5%`,
+        reason: `Aging comp penalty (${daysOld} days, 180+): -5%`,
+      });
+    } else if (daysOld >= COMP_RULES.agingThreshold) {
+      // 150-180 days: -2%
+      const pct = 0.02;
+      const penalty = -(adjustedPrice * pct);
+      adjustedPrice += penalty;
+      adjustments.push({
+        type: 'aging_penalty',
+        amount: penalty,
+        reason: `Aging comp penalty (${daysOld} days, 150+): -2%`,
       });
     } else if (daysOld >= COMP_RULES.agingWarningThreshold) {
       // 120-150 days: flag only
