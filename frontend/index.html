@@ -1047,7 +1047,7 @@
                     trial_ends_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
                 };
 
-                const { error: profileError } = await supabase
+                const { error: profileError } = await supabaseClient
                     .from('profiles')
                     .upsert(profileData, { onConflict: 'id' });
 
@@ -1164,7 +1164,7 @@
     async function loadProfile() {
         if (!currentUser) return;
         try {
-            const { data, error } = await supabase
+            const { data, error } = await supabaseClient
                 .from('profiles')
                 .select('*')
                 .eq('id', currentUser.id)
@@ -1185,7 +1185,7 @@
                     analysis_limit: 10,
                     trial_ends_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
                 };
-                const { data: created, error: createErr } = await supabase
+                const { data: created, error: createErr } = await supabaseClient
                     .from('profiles')
                     .upsert(newProfile, { onConflict: 'id' })
                     .select()
@@ -1255,7 +1255,7 @@
         if (!currentUser || !currentProfile) return;
         try {
             const newCount = (currentProfile.analysis_count || 0) + 1;
-            const { error } = await supabase
+            const { error } = await supabaseClient
                 .from('profiles')
                 .update({ analysis_count: newCount })
                 .eq('id', currentUser.id);
@@ -1522,7 +1522,7 @@
                 }
             };
 
-            const { data, error } = await supabase
+            const { data, error } = await supabaseClient
                 .from('deals')
                 .insert(dealRow)
                 .select()
@@ -1540,7 +1540,7 @@
     async function loadDeals() {
         if (!currentUser) return;
         try {
-            const { data, error } = await supabase
+            const { data, error } = await supabaseClient
                 .from('deals')
                 .select('*')
                 .eq('user_id', currentUser.id)
@@ -1673,7 +1673,7 @@
 
     async function moveDeal(dealId, newStage) {
         try {
-            const { error } = await supabase
+            const { error } = await supabaseClient
                 .from('deals')
                 .update({ pipeline_stage: newStage })
                 .eq('id', dealId)
@@ -1694,7 +1694,7 @@
     async function deleteDeal(dealId) {
         if (!confirm('Move this deal to trash? You can recover it later.')) return;
         try {
-            const { error } = await supabase
+            const { error } = await supabaseClient
                 .from('deals')
                 .update({ pipeline_stage: 'deleted' })
                 .eq('id', dealId)
