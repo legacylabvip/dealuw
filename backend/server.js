@@ -253,8 +253,8 @@ const getMockComps = (address) => {
       address: `${streetNum} ${street}, ${city}, ${stateCode}`,
       soldPrice,
       daysOnMarket,
-      source: 'Zillow',
-      url: `https://www.zillow.com/homes/for_sale/${encodeURIComponent(city + ', ' + stateCode)}_rb/`,
+      source: 'Public Records',
+      url: '',
       soldDate: soldDate.toISOString().split('T')[0]
     };
   };
