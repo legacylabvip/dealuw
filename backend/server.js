@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const stripe = require('stripe');
-const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const multer = require('multer');
 
@@ -11,80 +10,35 @@ dotenv.config();
 const app = express();
 const stripeClient = stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_dummy');
 
+// Supabase service role client for server-side operations
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://qmgizjauopuxmyztlmza.supabase.co';
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+
+// Helper to call Supabase REST API with service role
+async function supabaseAdmin(tablePath, options = {}) {
+  const { method = 'GET', body, headers: extraHeaders = {}, query = '' } = options;
+  const url = `${SUPABASE_URL}/rest/v1/${tablePath}${query ? '?' + query : ''}`;
+  const headers = {
+    'apikey': SUPABASE_SERVICE_ROLE_KEY,
+    'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+    'Content-Type': 'application/json',
+    'Prefer': method === 'POST' ? 'return=representation' : (method === 'PATCH' ? 'return=representation' : ''),
+    ...extraHeaders
+  };
+  const fetchOptions = { method, headers };
+  if (body) fetchOptions.body = JSON.stringify(body);
+  const res = await fetch(url, fetchOptions);
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Supabase ${method} ${tablePath}: ${res.status} ${errText}`);
+  }
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
+}
+
 // File upload config
 const storage = multer.memoryStorage();
 const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
-
-// SQLite Database
-const dbPath = path.join(__dirname, 'dealuw.db');
-const db = new sqlite3.Database(dbPath, (err) => {
-  if (err) console.error('DB Error:', err);
-  else console.log('✅ SQLite connected:', dbPath);
-});
-
-// Initialize database tables
-db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY,
-    email TEXT UNIQUE,
-    password TEXT,
-    name TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-  
-  db.run(`CREATE TABLE IF NOT EXISTS subscriptions (
-    id INTEGER PRIMARY KEY,
-    user_id INTEGER UNIQUE,
-    tier TEXT,
-    stripe_customer_id TEXT,
-    stripe_subscription_id TEXT,
-    status TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS usage_tracking (
-    id INTEGER PRIMARY KEY,
-    user_id TEXT UNIQUE,
-    analysis_count INTEGER DEFAULT 0,
-    first_analysis_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    last_analysis_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-  
-  db.run(`CREATE TABLE IF NOT EXISTS deals (
-    id INTEGER PRIMARY KEY,
-    user_id INTEGER,
-    address TEXT,
-    square_feet INTEGER,
-    bed_bath TEXT,
-    repair_category TEXT,
-    repair_amount INTEGER,
-    arv INTEGER,
-    fmv INTEGER,
-    offers TEXT,
-    photos_count INTEGER,
-    deal_type TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-  
-  db.run(`CREATE TABLE IF NOT EXISTS discord_analyses (
-    id INTEGER PRIMARY KEY,
-    user_id INTEGER,
-    deal_data TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-  
-  db.run(`CREATE TABLE IF NOT EXISTS comps (
-    id INTEGER PRIMARY KEY,
-    address TEXT,
-    sale_price INTEGER,
-    square_feet INTEGER,
-    bed_bath TEXT,
-    days_on_market INTEGER,
-    city TEXT,
-    state TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-});
 
 // Middleware
 app.use(cors());
@@ -99,76 +53,86 @@ app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, 
     if (webhookSecret) {
       event = stripeClient.webhooks.constructEvent(req.body, sig, webhookSecret);
     } else {
-      // In dev without webhook secret, parse the raw body
       event = JSON.parse(req.body.toString());
-      console.log('⚠️  No STRIPE_WEBHOOK_SECRET set — skipping signature verification');
+      console.log('Warning: No STRIPE_WEBHOOK_SECRET set — skipping signature verification');
     }
   } catch (err) {
     console.error('Webhook signature verification failed:', err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  console.log(`📩 Stripe webhook received: ${event.type}`);
+  console.log(`Stripe webhook received: ${event.type}`);
 
-  switch (event.type) {
-    case 'checkout.session.completed': {
-      const session = event.data.object;
-      const userId = session.metadata?.userId || session.client_reference_id;
-      const customerId = session.customer;
-      const subscriptionId = session.subscription;
+  try {
+    switch (event.type) {
+      case 'checkout.session.completed': {
+        const session = event.data.object;
+        const userId = session.metadata?.userId || session.client_reference_id;
+        const customerId = session.customer;
+        const subscriptionId = session.subscription;
 
-      if (userId && subscriptionId) {
-        db.run(
-          `INSERT INTO subscriptions (user_id, tier, stripe_customer_id, stripe_subscription_id, status)
-           VALUES (?, 'pro', ?, ?, 'active')
-           ON CONFLICT(user_id) DO UPDATE SET
-             tier = 'pro',
-             stripe_customer_id = excluded.stripe_customer_id,
-             stripe_subscription_id = excluded.stripe_subscription_id,
-             status = 'active'`,
-          [userId, customerId, subscriptionId],
-          (err) => {
-            if (err) console.error('DB error saving subscription:', err.message);
-            else console.log(`✅ Subscription activated for user ${userId}`);
-          }
-        );
+        if (userId && subscriptionId) {
+          // Update profile in Supabase
+          await supabaseAdmin('profiles', {
+            method: 'PATCH',
+            query: `id=eq.${userId}`,
+            body: {
+              subscription_tier: 'pro',
+              stripe_customer_id: customerId,
+              stripe_subscription_id: subscriptionId,
+              subscription_status: 'active',
+              analysis_limit: 500
+            }
+          });
+          console.log(`Subscription activated for user ${userId}`);
+        }
+        break;
       }
-      break;
-    }
 
-    case 'customer.subscription.deleted': {
-      const subscription = event.data.object;
-      const subscriptionId = subscription.id;
+      case 'customer.subscription.deleted': {
+        const subscription = event.data.object;
+        const subscriptionId = subscription.id;
 
-      db.run(
-        `UPDATE subscriptions SET status = 'canceled' WHERE stripe_subscription_id = ?`,
-        [subscriptionId],
-        (err) => {
-          if (err) console.error('DB error canceling subscription:', err.message);
-          else console.log(`❌ Subscription canceled: ${subscriptionId}`);
+        // Find profile by subscription ID and downgrade
+        const profiles = await supabaseAdmin('profiles', {
+          query: `stripe_subscription_id=eq.${subscriptionId}&select=id`
+        });
+        if (profiles && profiles.length > 0) {
+          await supabaseAdmin('profiles', {
+            method: 'PATCH',
+            query: `stripe_subscription_id=eq.${subscriptionId}`,
+            body: {
+              subscription_tier: 'free',
+              subscription_status: 'canceled',
+              analysis_limit: 10
+            }
+          });
+          console.log(`Subscription canceled: ${subscriptionId}`);
         }
-      );
-      break;
+        break;
+      }
+
+      case 'customer.subscription.updated': {
+        const subscription = event.data.object;
+        const subscriptionId = subscription.id;
+        const status = subscription.status;
+
+        await supabaseAdmin('profiles', {
+          method: 'PATCH',
+          query: `stripe_subscription_id=eq.${subscriptionId}`,
+          body: {
+            subscription_status: status
+          }
+        });
+        console.log(`Subscription ${subscriptionId} updated to ${status}`);
+        break;
+      }
+
+      default:
+        console.log(`Unhandled event type: ${event.type}`);
     }
-
-    case 'customer.subscription.updated': {
-      const subscription = event.data.object;
-      const subscriptionId = subscription.id;
-      const status = subscription.status; // active, past_due, canceled, etc.
-
-      db.run(
-        `UPDATE subscriptions SET status = ? WHERE stripe_subscription_id = ?`,
-        [status, subscriptionId],
-        (err) => {
-          if (err) console.error('DB error updating subscription:', err.message);
-          else console.log(`🔄 Subscription ${subscriptionId} updated to ${status}`);
-        }
-      );
-      break;
-    }
-
-    default:
-      console.log(`Unhandled event type: ${event.type}`);
+  } catch (err) {
+    console.error('Webhook processing error:', err.message);
   }
 
   res.json({ received: true });
@@ -178,7 +142,6 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // ============ COMPS DATA ============
-// Market data by state (price ranges for realistic comps)
 const marketData = {
   'AK': { minPrice: 280000, maxPrice: 450000, avgPrice: 350000, label: 'Alaska' },
   'AL': { minPrice: 150000, maxPrice: 280000, avgPrice: 200000, label: 'Alabama' },
@@ -232,7 +195,6 @@ const marketData = {
   'WY': { minPrice: 160000, maxPrice: 320000, avgPrice: 230000, label: 'Wyoming' }
 };
 
-// Real street names for each major city
 const cityStreets = {
   'ANCHORAGE': ['Northern Lights Blvd', 'Tudor Road', 'Abbott Road', 'Bragaw Street', 'Debarr Road', 'Dowling Road', 'Muldoon Road', 'San Marco Drive'],
   'PHOENIX': ['Central Avenue', 'Van Buren Street', 'Washington Street', 'Jefferson Street', 'Madison Street', 'Monroe Street', 'Indian School Road'],
@@ -257,45 +219,25 @@ const cityStreets = {
 };
 
 const getMockComps = (address) => {
-  // Parse address flexibly: "123 Main St, City, STATE" or "123 Main St, City STATE"
   const parts = address.split(',').map(p => p.trim());
-  
-  // Extract state code (last 2 uppercase letters in the full address)
   const stateMatch = address.match(/([A-Z]{2})\s*$/);
   let stateCode = stateMatch ? stateMatch[1] : 'TN';
-  
-  console.log(`🔍 Parsing address: "${address}" → State: ${stateCode}`);
-  
-  // Extract city (usually before the state)
+
   let city = 'Unknown City';
   if (parts.length >= 2) {
-    city = parts[1]; // City from comma-separated
+    city = parts[1];
   }
-  
-  // If only one comma (City STATE format), extract city from that
   if (parts.length === 2 && parts[1].includes(' ')) {
     const cityStateParts = parts[1].split(/\s+/);
-    city = cityStateParts.slice(0, -1).join(' '); // Everything except last part (state)
+    city = cityStateParts.slice(0, -1).join(' ');
   }
-  
-  // If no comma and looks like just city (first part is a known city)
-  if (parts.length === 1 && Object.keys(cityStreets).includes(parts[0].toUpperCase())) {
-    city = parts[0];
-  }
-  
-  console.log(`📍 Extracted city: "${city}"`);
-  
-  // Get market data for this state
+
   const market = marketData[stateCode] || marketData['TN'];
-  console.log(`💰 Market avg: $${market.avgPrice.toLocaleString()} (${market.label})`);
-  
-  // Get streets for this city, or use generic streets
   const streets = cityStreets[city.toUpperCase()] || [
     'Main Street', 'Oak Avenue', 'Maple Drive', 'Elm Street', 'Cedar Lane',
     'Birch Road', 'Hickory Lane', 'Walnut Street', 'Chestnut Avenue', 'Ash Street'
   ];
-  
-  // Generate 3 realistic comps for this market
+
   const generateComp = () => {
     const streetNum = Math.floor(Math.random() * 9000) + 100;
     const street = streets[Math.floor(Math.random() * streets.length)];
@@ -306,7 +248,7 @@ const getMockComps = (address) => {
     const daysAgo = Math.floor(Math.random() * 60) + 5;
     const soldDate = new Date();
     soldDate.setDate(soldDate.getDate() - daysAgo);
-    
+
     return {
       address: `${streetNum} ${street}, ${city}, ${stateCode}`,
       soldPrice,
@@ -316,12 +258,8 @@ const getMockComps = (address) => {
       soldDate: soldDate.toISOString().split('T')[0]
     };
   };
-  
-  return [
-    generateComp(),
-    generateComp(),
-    generateComp()
-  ];
+
+  return [generateComp(), generateComp(), generateComp()];
 };
 
 const estimateARV = (comps) => {
@@ -330,12 +268,10 @@ const estimateARV = (comps) => {
 };
 
 // ============ UNDERWRITING CALCULATIONS ============
-// CASH DEAL: MAO = (ARV × 0.70) - Repairs - Assignment Fee (min $5,000)
 const calculateCashOffers = (arv, repairs, customAssignmentFee = null) => {
   const arvMultiplier = arv * 0.70;
   const mao = arvMultiplier - repairs;
-  
-  // If custom assignment fee provided, use it
+
   if (customAssignmentFee !== null && customAssignmentFee > 0) {
     return {
       custom: {
@@ -344,16 +280,15 @@ const calculateCashOffers = (arv, repairs, customAssignmentFee = null) => {
         offerPrice: Math.round(mao - customAssignmentFee),
         profit: Math.round(customAssignmentFee),
         profitMargin: ((customAssignmentFee / mao) * 100).toFixed(1) + '%',
-        formula: '(ARV × 0.70) - Repairs - Assignment Fee'
+        formula: '(ARV x 0.70) - Repairs - Assignment Fee'
       }
     };
   }
-  
-  // Otherwise suggest Conservative/Fair/Aggressive
+
   const conservativeAssignment = Math.max(5000, Math.round(arv * 0.25));
   const fairAssignment = Math.max(5000, Math.round(arv * 0.20));
   const aggressiveAssignment = Math.max(5000, Math.round(arv * 0.15));
-  
+
   return {
     conservative: {
       mao: Math.round(mao),
@@ -361,7 +296,7 @@ const calculateCashOffers = (arv, repairs, customAssignmentFee = null) => {
       offerPrice: Math.round(mao - conservativeAssignment),
       profit: conservativeAssignment,
       profitMargin: '25%',
-      formula: '(ARV × 0.70) - Repairs - Assignment Fee'
+      formula: '(ARV x 0.70) - Repairs - Assignment Fee'
     },
     fair: {
       mao: Math.round(mao),
@@ -369,7 +304,7 @@ const calculateCashOffers = (arv, repairs, customAssignmentFee = null) => {
       offerPrice: Math.round(mao - fairAssignment),
       profit: fairAssignment,
       profitMargin: '20%',
-      formula: '(ARV × 0.70) - Repairs - Assignment Fee'
+      formula: '(ARV x 0.70) - Repairs - Assignment Fee'
     },
     aggressive: {
       mao: Math.round(mao),
@@ -377,16 +312,14 @@ const calculateCashOffers = (arv, repairs, customAssignmentFee = null) => {
       offerPrice: Math.round(mao - aggressiveAssignment),
       profit: aggressiveAssignment,
       profitMargin: '15%',
-      formula: '(ARV × 0.70) - Repairs - Assignment Fee'
+      formula: '(ARV x 0.70) - Repairs - Assignment Fee'
     }
   };
 };
 
-// NOVATION: MAO = (FMV × 0.90) - Closing Costs - Broker Fees - Repairs - $35,000
 const calculateNovationOffers = (fmv, repairs, customAssignmentFee = null) => {
   const mao = (fmv * 0.90) - repairs - 35000;
-  
-  // If custom assignment fee provided, use it
+
   if (customAssignmentFee !== null && customAssignmentFee > 0) {
     return {
       custom: {
@@ -395,15 +328,15 @@ const calculateNovationOffers = (fmv, repairs, customAssignmentFee = null) => {
         offerPrice: Math.round(mao - customAssignmentFee),
         profit: Math.round(customAssignmentFee),
         profitMargin: ((customAssignmentFee / mao) * 100).toFixed(1) + '%',
-        formula: '(FMV × 0.90) - Repairs - $35K'
+        formula: '(FMV x 0.90) - Repairs - $35K'
       }
     };
   }
-  
+
   const conservativeAssignment = Math.max(5000, Math.round(mao * 0.25));
   const fairAssignment = Math.max(5000, Math.round(mao * 0.20));
   const aggressiveAssignment = Math.max(5000, Math.round(mao * 0.15));
-  
+
   return {
     conservative: {
       mao: Math.round(mao),
@@ -411,7 +344,7 @@ const calculateNovationOffers = (fmv, repairs, customAssignmentFee = null) => {
       offerPrice: Math.round(mao - conservativeAssignment),
       profit: conservativeAssignment,
       profitMargin: '25%',
-      formula: '(FMV × 0.90) - Repairs - $35K'
+      formula: '(FMV x 0.90) - Repairs - $35K'
     },
     fair: {
       mao: Math.round(mao),
@@ -419,7 +352,7 @@ const calculateNovationOffers = (fmv, repairs, customAssignmentFee = null) => {
       offerPrice: Math.round(mao - fairAssignment),
       profit: fairAssignment,
       profitMargin: '20%',
-      formula: '(FMV × 0.90) - Repairs - $35K'
+      formula: '(FMV x 0.90) - Repairs - $35K'
     },
     aggressive: {
       mao: Math.round(mao),
@@ -427,7 +360,7 @@ const calculateNovationOffers = (fmv, repairs, customAssignmentFee = null) => {
       offerPrice: Math.round(mao - aggressiveAssignment),
       profit: aggressiveAssignment,
       profitMargin: '15%',
-      formula: '(FMV × 0.90) - Repairs - $35K'
+      formula: '(FMV x 0.90) - Repairs - $35K'
     }
   };
 };
@@ -438,15 +371,12 @@ const calculateNovationOffers = (fmv, repairs, customAssignmentFee = null) => {
 app.post('/api/property/comps', async (req, res) => {
   try {
     const { address } = req.body;
-    
-    if (!address) {
-      return res.status(400).json({ error: 'Address is required' });
-    }
-    
+    if (!address) return res.status(400).json({ error: 'Address is required' });
+
     const comps = getMockComps(address);
     const arv = estimateARV(comps);
     const fmv = Math.round(arv * 0.95);
-    
+
     res.json({
       address,
       comps,
@@ -463,19 +393,9 @@ app.post('/api/property/comps', async (req, res) => {
 app.post('/api/property/calculate-repairs', (req, res) => {
   try {
     const { squareFeet, repairCategory, customAmount } = req.body;
-    
-    if (!squareFeet) {
-      return res.status(400).json({ error: 'Square footage required' });
-    }
-    
-    const repairRates = {
-      none: 5,
-      light: 15,
-      medium: 30,
-      high: 45,
-      fullgut: 60
-    };
-    
+    if (!squareFeet) return res.status(400).json({ error: 'Square footage required' });
+
+    const repairRates = { none: 5, light: 15, medium: 30, high: 45, fullgut: 60 };
     let totalRepairs = 0;
     if (repairCategory === 'custom') {
       totalRepairs = customAmount;
@@ -483,7 +403,7 @@ app.post('/api/property/calculate-repairs', (req, res) => {
       const rate = repairRates[repairCategory] || 0;
       totalRepairs = squareFeet * rate;
     }
-    
+
     res.json({
       squareFeet,
       repairCategory,
@@ -506,17 +426,14 @@ app.post('/api/property/upload-photos', upload.array('photos', 5), async (req, r
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: 'No photos provided' });
     }
-    
-    const photoCount = req.files.length;
     const photos = req.files.map(file => ({
       filename: file.originalname,
       size: file.size,
       mimetype: file.mimetype
     }));
-    
     res.json({
       success: true,
-      photosProcessed: photoCount,
+      photosProcessed: req.files.length,
       photos,
       message: 'Photos received for deal analysis'
     });
@@ -528,21 +445,12 @@ app.post('/api/property/upload-photos', upload.array('photos', 5), async (req, r
 // Full analysis endpoint
 app.post('/api/property/full-analysis', async (req, res) => {
   try {
-    const { 
-      address, 
-      squareFeet, 
-      bedBath, 
-      repairCategory, 
-      customRepairs,
-      dealType 
-    } = req.body;
-    
-    // Get comps
+    const { address, squareFeet, bedBath, repairCategory, customRepairs, dealType } = req.body;
+
     const comps = getMockComps(address);
     const arv = estimateARV(comps);
     const fmv = Math.round(arv * 0.95);
-    
-    // Calculate repairs
+
     const repairRates = { none: 5, light: 15, medium: 30, high: 45, fullgut: 60 };
     let repairs = 0;
     if (repairCategory === 'custom') {
@@ -550,25 +458,16 @@ app.post('/api/property/full-analysis', async (req, res) => {
     } else {
       repairs = squareFeet * (repairRates[repairCategory] || 0);
     }
-    
-    // Get offers based on deal type
+
     let offers;
     if (dealType === 'novation') {
       offers = calculateNovationOffers(fmv, repairs);
     } else {
       offers = calculateCashOffers(arv, repairs);
     }
-    
+
     res.json({
-      address,
-      squareFeet,
-      bedBath,
-      repairs,
-      arv,
-      fmv,
-      comps,
-      offers,
-      dealType,
+      address, squareFeet, bedBath, repairs, arv, fmv, comps, offers, dealType,
       analysis: {
         bestOffer: offers.fair.offerPrice,
         recommendedAssignmentFee: offers.fair.assignmentFee,
@@ -584,11 +483,8 @@ app.post('/api/property/full-analysis', async (req, res) => {
 app.post('/api/calculate/offer-analysis', (req, res) => {
   try {
     const { arv, repairs, dealType = 'cash', assignmentFee = null } = req.body;
-    
-    if (!arv || repairs === undefined) {
-      return res.status(400).json({ error: 'ARV and repairs are required' });
-    }
-    
+    if (!arv || repairs === undefined) return res.status(400).json({ error: 'ARV and repairs are required' });
+
     let offers;
     if (dealType === 'novation') {
       const fmv = Math.round(arv * 0.95);
@@ -596,56 +492,18 @@ app.post('/api/calculate/offer-analysis', (req, res) => {
     } else {
       offers = calculateCashOffers(arv, repairs, assignmentFee);
     }
-    
+
     res.json({
-      arv,
-      repairs,
-      dealType,
+      arv, repairs, dealType,
       assignmentFee: assignmentFee || null,
       offers,
       bestOffer: offers.fair || offers.custom,
       methodology: {
-        cash: '(ARV × 0.70) - Repairs - Assignment Fee (min $5K)',
-        novation: '(FMV × 0.90) - Repairs - $35K',
+        cash: '(ARV x 0.70) - Repairs - Assignment Fee (min $5K)',
+        novation: '(FMV x 0.90) - Repairs - $35K',
         notes: assignmentFee ? 'Using custom assignment fee' : 'Assignment fee suggestions: Conservative 25%, Fair 20%, Aggressive 15%'
       }
     });
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-});
-
-// Deal storage
-app.post('/api/deals/save', (req, res) => {
-  try {
-    const { userId, address, squareFeet, bedBath, repairCategory, repairAmount, arv, fmv, offers, photoCount, dealType } = req.body;
-    
-    db.run(
-      'INSERT INTO deals (user_id, address, square_feet, bed_bath, repair_category, repair_amount, arv, fmv, offers, photos_count, deal_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [userId, address, squareFeet, bedBath, repairCategory, repairAmount, arv, fmv, JSON.stringify(offers), photoCount || 0, dealType],
-      function(err) {
-        if (err) return res.status(400).json({ error: err.message });
-        res.json({ success: true, dealId: this.lastID });
-      }
-    );
-  } catch (error) {
-    res.status(400).json({ error: error.message });
-  }
-});
-
-// Get deals
-app.get('/api/deals/:userId', (req, res) => {
-  try {
-    const { userId } = req.params;
-    
-    db.all(
-      'SELECT * FROM deals WHERE user_id = ? ORDER BY created_at DESC LIMIT 20',
-      [userId],
-      (err, rows) => {
-        if (err) return res.status(400).json({ error: err.message });
-        res.json({ deals: rows || [] });
-      }
-    );
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
@@ -659,28 +517,19 @@ app.post('/api/create-checkout-session', async (req, res) => {
     const { userId, userEmail } = req.body;
     const priceId = process.env.STRIPE_PRICE_PRO;
 
-    if (!priceId) {
-      return res.status(500).json({ error: 'Stripe price ID not configured' });
-    }
+    if (!priceId) return res.status(500).json({ error: 'Stripe price ID not configured' });
 
     const sessionParams = {
       mode: 'subscription',
       payment_method_types: ['card'],
-      line_items: [{
-        price: priceId,
-        quantity: 1,
-      }],
-      success_url: `${req.headers.origin || 'http://localhost:3001'}/?session_id={CHECKOUT_SESSION_ID}&status=success`,
-      cancel_url: `${req.headers.origin || 'http://localhost:3001'}/?status=canceled`,
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: `${req.headers.origin || 'https://www.dealuw.com'}/?session_id={CHECKOUT_SESSION_ID}&status=success`,
+      cancel_url: `${req.headers.origin || 'https://www.dealuw.com'}/?status=canceled`,
       client_reference_id: userId || 'anonymous',
-      metadata: {
-        userId: userId || 'anonymous',
-      },
+      metadata: { userId: userId || 'anonymous' },
     };
 
-    if (userEmail) {
-      sessionParams.customer_email = userEmail;
-    }
+    if (userEmail) sessionParams.customer_email = userEmail;
 
     const session = await stripeClient.checkout.sessions.create(sessionParams);
     res.json({ url: session.url, sessionId: session.id });
@@ -690,89 +539,15 @@ app.post('/api/create-checkout-session', async (req, res) => {
   }
 });
 
-// Check subscription status for a user
-app.get('/api/subscription-status/:userId', (req, res) => {
-  const { userId } = req.params;
-
-  db.get(
-    `SELECT tier, status, stripe_subscription_id, created_at FROM subscriptions WHERE user_id = ? AND status = 'active'`,
-    [userId],
-    (err, row) => {
-      if (err) return res.status(400).json({ error: err.message });
-
-      if (row) {
-        return res.json({
-          subscribed: true,
-          tier: row.tier,
-          status: row.status,
-          subscriptionId: row.stripe_subscription_id,
-          since: row.created_at
-        });
-      }
-
-      // Check usage for free tier
-      db.get(
-        `SELECT analysis_count, first_analysis_at FROM usage_tracking WHERE user_id = ?`,
-        [userId],
-        (err2, usage) => {
-          if (err2) return res.status(400).json({ error: err2.message });
-
-          const analysisCount = usage ? usage.analysis_count : 0;
-          const firstAnalysis = usage ? new Date(usage.first_analysis_at) : null;
-          const trialDaysLeft = firstAnalysis
-            ? Math.max(0, 7 - Math.floor((Date.now() - firstAnalysis.getTime()) / (1000 * 60 * 60 * 24)))
-            : 7;
-          const trialExpired = firstAnalysis && trialDaysLeft === 0;
-          const limitReached = analysisCount >= 10;
-
-          res.json({
-            subscribed: false,
-            tier: 'free',
-            analysisCount,
-            analysisLimit: 10,
-            trialDaysLeft,
-            trialExpired,
-            limitReached,
-            needsUpgrade: trialExpired || limitReached
-          });
-        }
-      );
-    }
-  );
-});
-
-// Track usage (increment analysis count)
-app.post('/api/track-usage', (req, res) => {
-  const { userId } = req.body;
-  if (!userId) return res.status(400).json({ error: 'userId required' });
-
-  db.run(
-    `INSERT INTO usage_tracking (user_id, analysis_count, first_analysis_at, last_analysis_at)
-     VALUES (?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-     ON CONFLICT(user_id) DO UPDATE SET
-       analysis_count = analysis_count + 1,
-       last_analysis_at = CURRENT_TIMESTAMP`,
-    [userId],
-    function(err) {
-      if (err) return res.status(400).json({ error: err.message });
-
-      db.get(`SELECT analysis_count FROM usage_tracking WHERE user_id = ?`, [userId], (err2, row) => {
-        if (err2) return res.status(400).json({ error: err2.message });
-        res.json({ analysisCount: row.analysis_count, limit: 10 });
-      });
-    }
-  );
-});
-
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    timestamp: new Date().toISOString(), 
-    database: 'SQLite',
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    database: 'Supabase Postgres',
     formulas: {
-      cash: '(ARV × 0.70) - Repairs - Assignment Fee',
-      novation: '(FMV × 0.90) - Repairs - $35K'
+      cash: '(ARV x 0.70) - Repairs - Assignment Fee',
+      novation: '(FMV x 0.90) - Repairs - $35K'
     }
   });
 });
@@ -790,10 +565,8 @@ app.get('*', (req, res) => {
 // Start server
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  console.log(`🚀 DealUW API running on port ${PORT}`);
-  console.log(`📍 dealuw.com (local: http://localhost:${PORT})`);
-  console.log(`💾 Database: ${dbPath}`);
-  console.log(`📊 Formulas: Cash (ARV × 0.70), Novation (FMV × 0.90)`);
+  console.log(`DealUW API running on port ${PORT}`);
+  console.log(`Database: Supabase Postgres`);
 });
 
 module.exports = app;
