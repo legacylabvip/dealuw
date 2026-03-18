@@ -1438,6 +1438,12 @@
                 if (details.yearBuilt) info += `, built ${details.yearBuilt}`;
                 if (details.lastSalePrice) info += ` | Last sold: $${details.lastSalePrice.toLocaleString()}`;
                 if (details.propertyType) info += ` | ${details.propertyType}`;
+                if (details.rentEstimate) {
+                    info += `</span><br><span style="color:#3498db;">Est. Rent: $${details.rentEstimate.toLocaleString()}/mo`;
+                    if (details.rentRangeLow && details.rentRangeHigh) {
+                        info += ` (range: $${details.rentRangeLow.toLocaleString()} - $${details.rentRangeHigh.toLocaleString()})`;
+                    }
+                }
                 info += '</span>';
                 document.getElementById('addressHint').innerHTML = info;
             } else {

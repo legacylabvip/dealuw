@@ -165,8 +165,52 @@ async function getRealComps(address) {
   return { comps, priceEstimate, priceLow, priceHigh };
 }
 
+async function fetchRentCastRentEstimate(address, beds, baths, sqft) {
+  if (!RENTCAST_API_KEY) return null;
+  try {
+    let url = `https://api.rentcast.io/v1/avm/rent/long-term?address=${encodeURIComponent(address)}`;
+    if (beds) url += `&bedrooms=${beds}`;
+    if (baths) url += `&bathrooms=${baths}`;
+    if (sqft) url += `&squareFootage=${sqft}`;
+    const res = await fetch(url, {
+      headers: { 'X-Api-Key': RENTCAST_API_KEY, 'Accept': 'application/json' }
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return {
+      rentEstimate: data.rent || data.rentEstimate || null,
+      rentRangeLow: data.rentRangeLow || null,
+      rentRangeHigh: data.rentRangeHigh || null
+    };
+  } catch (err) {
+    console.error('RentCast rent estimate error:', err.message);
+    return null;
+  }
+}
+
 async function getPropertyDetails(address) {
-  // Try RentCast first
+  // Start with Brave for property details (free, fast, reliable)
+  const braveData = await fetchPropertyViaBrave(address);
+
+  // Then try RentCast for LTR rental estimate
+  const beds = braveData?.beds || null;
+  const baths = braveData?.baths || null;
+  const sqft = braveData?.sqft || null;
+  const rentData = await fetchRentCastRentEstimate(address, beds, baths, sqft);
+
+  if (braveData) {
+    return {
+      ...braveData,
+      rentEstimate: rentData?.rentEstimate || null,
+      rentRangeLow: rentData?.rentRangeLow || null,
+      rentRangeHigh: rentData?.rentRangeHigh || null,
+      dataSource: rentData?.rentEstimate
+        ? 'Public Records + RentCast Rent Estimate'
+        : 'Public Records (Brave Search)'
+    };
+  }
+
+  // If Brave fails, try RentCast for property data too
   const property = await fetchRentCastProperty(address);
   if (property) {
     return {
@@ -180,13 +224,12 @@ async function getPropertyDetails(address) {
       lastSalePrice: property.lastSalePrice,
       lastSaleDate: property.lastSaleDate,
       taxAssessment: property.taxAssessment,
+      rentEstimate: rentData?.rentEstimate || null,
+      rentRangeLow: rentData?.rentRangeLow || null,
+      rentRangeHigh: rentData?.rentRangeHigh || null,
       dataSource: 'RentCast'
     };
   }
-
-  // Fallback to Brave search extraction
-  const braveData = await fetchPropertyViaBrave(address);
-  if (braveData) return braveData;
 
   return null;
 }
