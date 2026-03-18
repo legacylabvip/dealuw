@@ -18,6 +18,8 @@ const RENTCAST_API_KEY = process.env.RENTCAST_API_KEY || '';
 const GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY || '';
 
 // ============ RENTCAST PROPERTY DATA ============
+const BRAVE_API_KEY = process.env.BRAVE_API_KEY || 'BSACZRerfoye440__Qh7zUx6F2PFN6q';
+
 async function fetchRentCastProperty(address) {
   if (!RENTCAST_API_KEY) return null;
   try {
@@ -29,6 +31,83 @@ async function fetchRentCastProperty(address) {
     return Array.isArray(data) && data.length > 0 ? data[0] : null;
   } catch (err) {
     console.error('RentCast property fetch error:', err.message);
+    return null;
+  }
+}
+
+async function fetchPropertyViaBrave(address) {
+  try {
+    const query = `${address} property details beds baths sqft`;
+    const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=5`, {
+      headers: { 'X-Subscription-Token': BRAVE_API_KEY, 'Accept': 'application/json' }
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const results = (data.web || {}).results || [];
+
+    let beds = null, baths = null, sqft = null, yearBuilt = null, lastSalePrice = null, propertyType = null, formattedAddress = null;
+
+    for (const r of results) {
+      const text = ((r.description || '') + ' ' + (r.title || '')).toLowerCase();
+
+      // Extract sqft
+      if (!sqft) {
+        const sqftMatch = text.match(/([\d,]+)\s*(?:sq\.?\s*ft|sqft|square\s*feet)/i);
+        if (sqftMatch) sqft = parseInt(sqftMatch[1].replace(/,/g, ''));
+      }
+
+      // Extract beds
+      if (!beds) {
+        const bedMatch = text.match(/(\d+)\s*(?:bed|br|bedroom)/i);
+        if (bedMatch) beds = parseInt(bedMatch[1]);
+      }
+
+      // Extract baths
+      if (!baths) {
+        const bathMatch = text.match(/([\d.]+)\s*(?:bath|ba|bathroom)/i);
+        if (bathMatch) baths = parseFloat(bathMatch[1]);
+      }
+
+      // Extract year built
+      if (!yearBuilt) {
+        const yearMatch = text.match(/built\s*(?:in\s*)?(\d{4})/i);
+        if (yearMatch) yearBuilt = parseInt(yearMatch[1]);
+      }
+
+      // Extract price
+      if (!lastSalePrice) {
+        const priceMatch = text.match(/\$\s*([\d,]+(?:\.\d+)?)\s*(?:k|m)?/i);
+        if (priceMatch) {
+          let price = parseFloat(priceMatch[1].replace(/,/g, ''));
+          if (price < 1000) price *= 1000;
+          if (price > 10000) lastSalePrice = Math.round(price);
+        }
+      }
+
+      // Extract property type
+      if (!propertyType) {
+        if (text.includes('single-family') || text.includes('single family')) propertyType = 'Single Family';
+        else if (text.includes('condo')) propertyType = 'Condo';
+        else if (text.includes('townhouse') || text.includes('townhome')) propertyType = 'Townhouse';
+        else if (text.includes('multi-family') || text.includes('multifamily') || text.includes('duplex')) propertyType = 'Multi-Family';
+      }
+
+      // Get formatted address from Zillow/Trulia title
+      if (!formattedAddress && (r.url || '').includes('zillow.com')) {
+        const addrMatch = (r.title || '').match(/^(.+?)\s*\|/);
+        if (addrMatch) formattedAddress = addrMatch[1].trim();
+      }
+    }
+
+    if (!sqft && !beds && !baths) return null;
+
+    return {
+      address: formattedAddress || address,
+      beds, baths, sqft, yearBuilt, lastSalePrice, propertyType,
+      dataSource: 'Public Records (Brave Search)'
+    };
+  } catch (err) {
+    console.error('Brave property fetch error:', err.message);
     return null;
   }
 }
@@ -87,20 +166,29 @@ async function getRealComps(address) {
 }
 
 async function getPropertyDetails(address) {
+  // Try RentCast first
   const property = await fetchRentCastProperty(address);
-  if (!property) return null;
-  return {
-    address: property.formattedAddress,
-    beds: property.bedrooms,
-    baths: property.bathrooms,
-    sqft: property.squareFootage,
-    yearBuilt: property.yearBuilt,
-    lotSize: property.lotSize,
-    propertyType: property.propertyType,
-    lastSalePrice: property.lastSalePrice,
-    lastSaleDate: property.lastSaleDate,
-    taxAssessment: property.taxAssessment
-  };
+  if (property) {
+    return {
+      address: property.formattedAddress,
+      beds: property.bedrooms,
+      baths: property.bathrooms,
+      sqft: property.squareFootage,
+      yearBuilt: property.yearBuilt,
+      lotSize: property.lotSize,
+      propertyType: property.propertyType,
+      lastSalePrice: property.lastSalePrice,
+      lastSaleDate: property.lastSaleDate,
+      taxAssessment: property.taxAssessment,
+      dataSource: 'RentCast'
+    };
+  }
+
+  // Fallback to Brave search extraction
+  const braveData = await fetchPropertyViaBrave(address);
+  if (braveData) return braveData;
+
+  return null;
 }
 
 // Helper to call Supabase REST API with service role
