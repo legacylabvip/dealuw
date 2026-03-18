@@ -663,7 +663,7 @@
                 <form id="underwritingForm" onsubmit="handleUnderwrite(event)">
                     <div class="form-group">
                         <label>Property Address</label>
-                        <input type="text" id="address" placeholder="Start typing an address..." required autocomplete="off">
+                        <input type="text" id="address" placeholder="Start typing an address..." required>
                         <small id="addressHint">We'll pull real property data, comps, and estimate ARV/FMV</small>
                     </div>
 
@@ -1890,16 +1890,18 @@
         try {
             const res = await fetch(API_URL + '/api/config/places-key');
             const { key } = await res.json();
-            if (!key) {
+            const cleanKey = (key || '').trim();
+            if (!cleanKey) {
                 console.warn('Google Places API key not configured');
                 return;
             }
 
-            // Load Google Maps JS
+            // Load Google Maps JS with error handling
             const script = document.createElement('script');
-            script.src = `https://maps.googleapis.com/maps/api/js?key=${key}&libraries=places&callback=onGoogleMapsLoaded`;
+            script.src = `https://maps.googleapis.com/maps/api/js?key=${cleanKey}&libraries=places&callback=onGoogleMapsLoaded`;
             script.async = true;
             script.defer = true;
+            script.onerror = () => console.warn('Google Maps script failed to load — address autocomplete disabled');
             document.head.appendChild(script);
         } catch (err) {
             console.warn('Failed to load Google Places:', err.message);

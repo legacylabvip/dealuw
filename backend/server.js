@@ -553,7 +553,7 @@ app.post('/api/property/upload-photos', upload.array('photos', 5), async (req, r
 // Full analysis endpoint
 // Google Places API key endpoint (public key safe for frontend)
 app.get('/api/config/places-key', (req, res) => {
-  res.json({ key: GOOGLE_PLACES_API_KEY });
+  res.json({ key: (GOOGLE_PLACES_API_KEY || '').trim() });
 });
 
 // Property details endpoint
