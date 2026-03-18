@@ -938,7 +938,7 @@
     const SUPABASE_URL = 'https://qmgizjauopuxmyztlmza.supabase.co';
     const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFtZ2l6amF1b3B1eG15enRsbXphIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4NjM0NDcsImV4cCI6MjA4OTQzOTQ0N30.u8fGTMUq4CPp3izooAsC_znXSNcjT9HGQBnmTW-dR6M';
 
-    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
     // API URL for backend endpoints
     const API_URL = window.location.hostname === 'localhost'
@@ -1017,7 +1017,7 @@
         btn.innerHTML = '<span class="spinner"></span> Creating account...';
 
         try {
-            const { data, error } = await supabase.auth.signUp({
+            const { data, error } = await supabaseClient.auth.signUp({
                 email,
                 password,
                 options: {
@@ -1085,7 +1085,7 @@
         btn.innerHTML = '<span class="spinner"></span> Logging in...';
 
         try {
-            const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+            const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
             if (error) throw error;
             await onAuthStateChanged(data.session);
             hideAuthModal();
@@ -1107,7 +1107,7 @@
         btn.innerHTML = '<span class="spinner"></span> Sending...';
 
         try {
-            const { error } = await supabase.auth.resetPasswordForEmail(email, {
+            const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
                 redirectTo: window.location.origin
             });
             if (error) throw error;
@@ -1121,7 +1121,7 @@
     }
 
     async function handleLogout() {
-        await supabase.auth.signOut();
+        await supabaseClient.auth.signOut();
         currentUser = null;
         currentProfile = null;
         allDeals = [];
@@ -1756,7 +1756,7 @@
             const notes = document.getElementById('dispoNotes').value;
 
             // Save dispo request to Supabase
-            const { error } = await supabase.from('dispo_requests').insert({
+            const { error } = await supabaseClient.from('dispo_requests').insert({
                 deal_id: deal.id,
                 user_id: currentUser.id,
                 user_email: currentProfile.email,
@@ -1823,12 +1823,12 @@
         handleStripeRedirect();
 
         // Listen for auth state changes
-        supabase.auth.onAuthStateChange(async (event, session) => {
+        supabaseClient.auth.onAuthStateChange(async (event, session) => {
             await onAuthStateChanged(session);
         });
 
         // Check for existing session
-        const { data: { session } } = await supabase.auth.getSession();
+        const { data: { session } } = await supabaseClient.auth.getSession();
         if (session) {
             await onAuthStateChanged(session);
         }
