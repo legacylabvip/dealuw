@@ -416,6 +416,34 @@
         }
         @keyframes spin { to { transform: rotate(360deg); } }
 
+        /* Google Places Autocomplete Dark Theme */
+        .pac-container {
+            background: #2a2a2a !important;
+            border: 1px solid #ffd700 !important;
+            border-radius: 8px !important;
+            margin-top: 4px !important;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+        }
+        .pac-item {
+            background: #2a2a2a !important;
+            color: #fff !important;
+            padding: 8px 12px !important;
+            border-bottom: 1px solid #333 !important;
+            cursor: pointer !important;
+        }
+        .pac-item:hover {
+            background: #4A235A !important;
+        }
+        .pac-item-query {
+            color: #ffd700 !important;
+            font-weight: 600 !important;
+        }
+        .pac-matched {
+            color: #ffd700 !important;
+        }
+        .pac-icon { display: none !important; }
+        .pac-item span:last-child { color: #999 !important; }
+
         /* ========== RESPONSIVE ========== */
         @media (max-width: 768px) {
             .hero h1 { font-size: 2rem; }
@@ -635,8 +663,8 @@
                 <form id="underwritingForm" onsubmit="handleUnderwrite(event)">
                     <div class="form-group">
                         <label>Property Address</label>
-                        <input type="text" id="address" placeholder="123 Main St, Nashville TN" required>
-                        <small>We'll pull local comps and estimate ARV/FMV</small>
+                        <input type="text" id="address" placeholder="Start typing an address..." required autocomplete="off">
+                        <small id="addressHint">We'll pull real property data, comps, and estimate ARV/FMV</small>
                     </div>
 
                     <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
@@ -1839,7 +1867,101 @@
         }
     }
 
-    window.addEventListener('load', init);
+    // ============================================================
+    // GOOGLE PLACES AUTOCOMPLETE
+    // ============================================================
+    let placesAutocomplete = null;
+
+    async function initGooglePlaces() {
+        try {
+            const res = await fetch(API_URL + '/api/config/places-key');
+            const { key } = await res.json();
+            if (!key) {
+                console.warn('Google Places API key not configured');
+                return;
+            }
+
+            // Load Google Maps JS
+            const script = document.createElement('script');
+            script.src = `https://maps.googleapis.com/maps/api/js?key=${key}&libraries=places&callback=onGoogleMapsLoaded`;
+            script.async = true;
+            script.defer = true;
+            document.head.appendChild(script);
+        } catch (err) {
+            console.warn('Failed to load Google Places:', err.message);
+        }
+    }
+
+    window.onGoogleMapsLoaded = function() {
+        const input = document.getElementById('address');
+        if (!input || !window.google) return;
+
+        placesAutocomplete = new google.maps.places.Autocomplete(input, {
+            types: ['address'],
+            componentRestrictions: { country: 'us' },
+            fields: ['formatted_address', 'address_components', 'geometry']
+        });
+
+        placesAutocomplete.addListener('place_changed', async function() {
+            const place = placesAutocomplete.getPlace();
+            if (!place || !place.formatted_address) return;
+
+            const fullAddress = place.formatted_address;
+            input.value = fullAddress;
+            document.getElementById('addressHint').innerHTML = '<span style="color:#27AE60;">Address selected — fetching property data...</span>';
+
+            // Auto-fetch property details from RentCast
+            try {
+                const res = await fetch(API_URL + '/api/property/details', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ address: fullAddress })
+                });
+                const details = await res.json();
+
+                if (details && details.sqft) {
+                    // Auto-fill form fields
+                    if (details.sqft) document.getElementById('squareFeet').value = details.sqft;
+                    if (details.beds) {
+                        const bedsSelect = document.getElementById('bedrooms');
+                        for (let opt of bedsSelect.options) {
+                            if (opt.value == details.beds || (details.beds >= 7 && opt.value === '7+')) {
+                                opt.selected = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (details.baths) {
+                        const bathsSelect = document.getElementById('bathrooms');
+                        for (let opt of bathsSelect.options) {
+                            if (opt.value == details.baths) {
+                                opt.selected = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    let infoText = `<span style="color:#27AE60;">Property found: ${details.beds || '?'}bd/${details.baths || '?'}ba, ${(details.sqft || 0).toLocaleString()} sqft`;
+                    if (details.yearBuilt) infoText += `, built ${details.yearBuilt}`;
+                    if (details.lastSalePrice) infoText += ` | Last sold: $${details.lastSalePrice.toLocaleString()}`;
+                    infoText += '</span>';
+                    document.getElementById('addressHint').innerHTML = infoText;
+                } else {
+                    document.getElementById('addressHint').innerHTML = '<span style="color:#f39c12;">Address found — property details not available, enter manually</span>';
+                }
+            } catch (err) {
+                console.warn('Property details fetch failed:', err);
+                document.getElementById('addressHint').innerHTML = '<span style="color:#f39c12;">Address selected — enter property details manually</span>';
+            }
+        });
+
+        console.log('Google Places autocomplete initialized');
+    };
+
+    window.addEventListener('load', () => {
+        init();
+        initGooglePlaces();
+    });
     </script>
 </body>
 </html>

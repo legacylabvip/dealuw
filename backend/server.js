@@ -15,6 +15,8 @@ const SUPABASE_URL = process.env.SUPABASE_URL || 'https://qmgizjauopuxmyztlmza.s
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const RENTCAST_API_KEY = process.env.RENTCAST_API_KEY || '';
 
+const GOOGLE_PLACES_API_KEY = process.env.GOOGLE_PLACES_API_KEY || '';
+
 // ============ RENTCAST PROPERTY DATA ============
 async function fetchRentCastProperty(address) {
   if (!RENTCAST_API_KEY) return null;
@@ -549,6 +551,11 @@ app.post('/api/property/upload-photos', upload.array('photos', 5), async (req, r
 });
 
 // Full analysis endpoint
+// Google Places API key endpoint (public key safe for frontend)
+app.get('/api/config/places-key', (req, res) => {
+  res.json({ key: GOOGLE_PLACES_API_KEY });
+});
+
 // Property details endpoint
 app.post('/api/property/details', async (req, res) => {
   try {
