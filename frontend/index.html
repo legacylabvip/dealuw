@@ -1211,7 +1211,11 @@
 
         banner.style.display = 'flex';
 
-        if (currentProfile.subscription_tier === 'pro' && currentProfile.subscription_status === 'active') {
+        if (currentProfile.subscription_tier === 'admin') {
+            text.innerHTML = `<strong>Admin</strong> -- Unlimited analyses`;
+            upgradeBtn.style.display = 'none';
+            banner.style.borderColor = '#ffd700';
+        } else if (currentProfile.subscription_tier === 'pro' && currentProfile.subscription_status === 'active') {
             const used = currentProfile.analysis_count || 0;
             const limit = currentProfile.analysis_limit || 500;
             text.innerHTML = `<strong>Pro Plan</strong> -- ${used} of ${limit} analyses used this month`;
@@ -1240,6 +1244,7 @@
 
     function canAnalyze() {
         if (!currentProfile) return false;
+        if (currentProfile.subscription_tier === 'admin') return true;
         if (currentProfile.subscription_tier === 'pro' && currentProfile.subscription_status === 'active') {
             return (currentProfile.analysis_count || 0) < (currentProfile.analysis_limit || 500);
         }
