@@ -1,0 +1,1343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DealUW (dealuw.com) - Wholesaler Underwriting</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a1a;
+            color: #fff;
+        }
+        
+        .navbar {
+            background: #0f0f0f;
+            border-bottom: 1px solid #333;
+            padding: 1rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .logo {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #ffd700;
+        }
+        
+        .tagline {
+            font-size: 0.75rem;
+            color: #999;
+            margin-top: 0.2rem;
+        }
+        
+        .nav-links a {
+            color: #fff;
+            text-decoration: none;
+            margin-left: 2rem;
+            transition: color 0.3s;
+        }
+        
+        .nav-links a:hover {
+            color: #ffd700;
+        }
+        
+        .hero {
+            background: linear-gradient(135deg, #4A235A 0%, #2d1b4e 100%);
+            padding: 4rem 2rem;
+            text-align: center;
+        }
+        
+        .hero h1 {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            color: #ffd700;
+        }
+        
+        .hero p {
+            font-size: 1.2rem;
+            margin-bottom: 2rem;
+            color: #ccc;
+        }
+        
+        .btn {
+            padding: 0.75rem 2rem;
+            border: none;
+            border-radius: 4px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .btn-primary {
+            background: #ffd700;
+            color: #000;
+            font-weight: bold;
+        }
+        
+        .btn-primary:hover {
+            background: #ffed4e;
+            transform: translateY(-2px);
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 3rem 2rem;
+        }
+        
+        .underwriting-form {
+            background: #2a2a2a;
+            padding: 2rem;
+            border-radius: 8px;
+            margin: 2rem 0;
+        }
+        
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: #ffd700;
+            font-weight: 600;
+        }
+        
+        input, select {
+            width: 100%;
+            padding: 0.75rem;
+            background: #1a1a1a;
+            border: 1px solid #444;
+            color: #fff;
+            border-radius: 4px;
+            font-size: 1rem;
+        }
+        
+        input:focus, select:focus {
+            outline: none;
+            border-color: #ffd700;
+            box-shadow: 0 0 0 2px rgba(255, 215, 0, 0.2);
+        }
+        
+        .repair-category {
+            background: #333;
+            padding: 1.5rem;
+            border-radius: 8px;
+            margin: 1rem 0;
+            border: 2px solid #444;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .repair-category:hover {
+            border-color: #ffd700;
+        }
+        
+        .repair-category.selected {
+            border-color: #27AE60;
+            background: #1a3a1a;
+        }
+        
+        .repair-category h4 {
+            color: #ffd700;
+            margin-bottom: 0.5rem;
+        }
+        
+        .repair-category p {
+            color: #999;
+            font-size: 0.9rem;
+        }
+        
+        .results {
+            background: #2a2a2a;
+            padding: 2rem;
+            border-radius: 8px;
+            margin-top: 2rem;
+            display: none;
+        }
+        
+        .results.active {
+            display: block;
+        }
+        
+        .comps-box {
+            background: #333;
+            padding: 1.5rem;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+            border-left: 4px solid #ffd700;
+        }
+        
+        .comps-box h3 {
+            color: #ffd700;
+            margin-bottom: 1rem;
+        }
+        
+        .comp-item {
+            background: #2a2a2a;
+            padding: 1rem;
+            margin: 0.5rem 0;
+            border-radius: 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+        
+        .comp-address {
+            color: #ffd700;
+            font-weight: 600;
+        }
+        
+        .comp-price {
+            color: #27AE60;
+            font-weight: bold;
+        }
+        
+        .comp-link {
+            display: inline-block;
+            padding: 0.5rem 1rem;
+            background: #27AE60;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-weight: bold;
+            transition: background 0.3s;
+        }
+        
+        .comp-link:hover {
+            background: #219653;
+        }
+        
+        .offer-card {
+            background: #333;
+            padding: 2rem;
+            border-radius: 8px;
+            margin: 1.5rem 0;
+            border-left: 4px solid #ffd700;
+        }
+        
+        .offer-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.5rem;
+        }
+        
+        .offer-title {
+            color: #ffd700;
+            font-size: 1.3rem;
+            font-weight: bold;
+        }
+        
+        .offer-badge {
+            background: #27AE60;
+            color: #000;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: bold;
+        }
+        
+        .offer-pricing {
+            background: #1a1a1a;
+            padding: 1.5rem;
+            border-radius: 8px;
+            margin-bottom: 1.5rem;
+        }
+        
+        .price-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.75rem 0;
+            border-bottom: 1px solid #444;
+        }
+        
+        .price-row:last-child {
+            border-bottom: none;
+        }
+        
+        .price-label {
+            color: #999;
+            font-size: 0.95rem;
+        }
+        
+        .price-value {
+            color: #27AE60;
+            font-size: 1.1rem;
+            font-weight: bold;
+        }
+        
+        .offer-analysis {
+            background: #1a3a1a;
+            padding: 1.5rem;
+            border-radius: 8px;
+            border: 1px solid #27AE60;
+            line-height: 1.6;
+            color: #ccc;
+        }
+        
+        .offer-analysis h5 {
+            color: #27AE60;
+            margin-bottom: 1rem;
+        }
+        
+        .offer-analysis p {
+            margin-bottom: 1rem;
+            font-size: 0.95rem;
+        }
+        
+        .comparison-table {
+            background: #333;
+            padding: 1.5rem;
+            border-radius: 8px;
+            margin-top: 2rem;
+            overflow-x: auto;
+        }
+        
+        .comparison-table h3 {
+            color: #ffd700;
+            margin-bottom: 1rem;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        th {
+            background: #1a1a1a;
+            color: #ffd700;
+            padding: 1rem;
+            text-align: left;
+            border-bottom: 2px solid #444;
+            font-weight: bold;
+        }
+        
+        td {
+            padding: 1rem;
+            border-bottom: 1px solid #444;
+            color: #ccc;
+        }
+        
+        tr:last-child td {
+            border-bottom: none;
+        }
+        
+        .value-positive {
+            color: #27AE60;
+            font-weight: bold;
+        }
+        
+        .value-neutral {
+            color: #ffd700;
+            font-weight: bold;
+        }
+        
+        .loading {
+            text-align: center;
+            color: #ffd700;
+            padding: 2rem;
+            font-size: 1.1rem;
+        }
+
+        .status-message {
+            background: #333;
+            padding: 1rem;
+            border-radius: 4px;
+            margin: 1rem 0;
+            color: #ccc;
+            text-align: center;
+        }
+
+        small {
+            display: block;
+            color: #999;
+            margin-top: 0.5rem;
+            font-size: 0.85rem;
+        }
+
+        /* ========== PRICING SECTION ========== */
+        .pricing-section {
+            background: #0f0f0f;
+            padding: 4rem 2rem;
+            text-align: center;
+        }
+
+        .pricing-section h2 {
+            color: #ffd700;
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .pricing-section .subtitle {
+            color: #999;
+            font-size: 1.1rem;
+            margin-bottom: 3rem;
+        }
+
+        .pricing-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .pricing-card {
+            background: #2a2a2a;
+            border: 2px solid #444;
+            border-radius: 12px;
+            padding: 2.5rem 2rem;
+            position: relative;
+            transition: all 0.3s;
+        }
+
+        .pricing-card:hover {
+            border-color: #ffd700;
+            transform: translateY(-4px);
+        }
+
+        .pricing-card.featured {
+            border-color: #ffd700;
+            background: linear-gradient(135deg, #2d1b4e 0%, #1a1a2e 100%);
+        }
+
+        .pricing-card.featured::before {
+            content: 'MOST POPULAR';
+            position: absolute;
+            top: -14px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #ffd700;
+            color: #000;
+            padding: 0.3rem 1.2rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: bold;
+            letter-spacing: 0.05em;
+        }
+
+        .pricing-card h3 {
+            color: #ffd700;
+            font-size: 1.4rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .pricing-card .price {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #fff;
+            margin: 1rem 0 0.25rem;
+        }
+
+        .pricing-card .price-period {
+            color: #999;
+            font-size: 0.9rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .pricing-card ul {
+            list-style: none;
+            text-align: left;
+            margin-bottom: 2rem;
+        }
+
+        .pricing-card ul li {
+            padding: 0.5rem 0;
+            color: #ccc;
+            font-size: 0.95rem;
+        }
+
+        .pricing-card ul li::before {
+            content: '\2713';
+            color: #27AE60;
+            font-weight: bold;
+            margin-right: 0.75rem;
+        }
+
+        .btn-subscribe {
+            display: inline-block;
+            padding: 0.85rem 2rem;
+            border: none;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-decoration: none;
+            width: 100%;
+        }
+
+        .btn-subscribe.btn-outline {
+            background: transparent;
+            border: 2px solid #ffd700;
+            color: #ffd700;
+        }
+
+        .btn-subscribe.btn-outline:hover {
+            background: #ffd700;
+            color: #000;
+        }
+
+        .btn-subscribe.btn-gold {
+            background: #ffd700;
+            color: #000;
+        }
+
+        .btn-subscribe.btn-gold:hover {
+            background: #ffed4e;
+            transform: translateY(-2px);
+        }
+
+        /* Usage banner */
+        .usage-banner {
+            background: linear-gradient(135deg, #4A235A 0%, #2d1b4e 100%);
+            border: 1px solid #ffd700;
+            border-radius: 8px;
+            padding: 1rem 1.5rem;
+            margin-bottom: 1.5rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+
+        .usage-banner .usage-text {
+            color: #ccc;
+            font-size: 0.95rem;
+        }
+
+        .usage-banner .usage-text strong {
+            color: #ffd700;
+        }
+
+        .usage-banner .btn-upgrade {
+            background: #ffd700;
+            color: #000;
+            border: none;
+            padding: 0.5rem 1.5rem;
+            border-radius: 4px;
+            font-weight: bold;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.3s;
+        }
+
+        .usage-banner .btn-upgrade:hover {
+            background: #ffed4e;
+        }
+
+        /* Upgrade modal */
+        .upgrade-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.85);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .upgrade-overlay.active {
+            display: flex;
+        }
+
+        .upgrade-modal {
+            background: #2a2a2a;
+            border: 2px solid #ffd700;
+            border-radius: 12px;
+            padding: 3rem;
+            max-width: 480px;
+            width: 90%;
+            text-align: center;
+        }
+
+        .upgrade-modal h2 {
+            color: #ffd700;
+            margin-bottom: 1rem;
+        }
+
+        .upgrade-modal p {
+            color: #ccc;
+            margin-bottom: 2rem;
+            line-height: 1.6;
+        }
+
+        .upgrade-modal .btn-close {
+            background: transparent;
+            border: 1px solid #666;
+            color: #999;
+            padding: 0.5rem 1.5rem;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 1rem;
+            font-size: 0.9rem;
+        }
+
+        /* Success banner */
+        .success-banner {
+            background: #1a3a1a;
+            border: 1px solid #27AE60;
+            color: #27AE60;
+            padding: 1rem 2rem;
+            text-align: center;
+            font-weight: bold;
+            display: none;
+        }
+
+        .success-banner.active {
+            display: block;
+        }
+
+        @media (max-width: 640px) {
+            .pricing-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="navbar">
+        <div>
+            <div class="logo">DealUW</div>
+            <div class="tagline">dealuw.com</div>
+        </div>
+        <div class="nav-links">
+            <a href="#home">Home</a>
+            <a href="#underwrite">Underwrite</a>
+            <a href="#pricing">Pricing</a>
+        </div>
+    </div>
+    
+    <!-- Success/Cancel banner for Stripe redirect -->
+    <div class="success-banner" id="successBanner"></div>
+
+    <div class="hero">
+        <h1>Forge Better Offers</h1>
+        <p>Instant property underwriting for wholesalers. Cash & Novation strategies.</p>
+        <button class="btn btn-primary" onclick="document.querySelector('.underwriting-form').scrollIntoView()">
+            Start Free Analysis
+        </button>
+    </div>
+
+    <!-- Pricing Section -->
+    <div class="pricing-section" id="pricing">
+        <h2>Simple Pricing</h2>
+        <p class="subtitle">Start free. Upgrade when you're ready to scale.</p>
+
+        <div class="pricing-grid">
+            <div class="pricing-card">
+                <h3>Free Trial</h3>
+                <div class="price">$0</div>
+                <div class="price-period">for 7 days</div>
+                <ul>
+                    <li>10 deal analyses</li>
+                    <li>Cash & Novation offers</li>
+                    <li>Comp data with Zillow links</li>
+                    <li>Conservative / Fair / Aggressive tiers</li>
+                </ul>
+                <button class="btn-subscribe btn-outline" onclick="document.querySelector('.underwriting-form').scrollIntoView({behavior:'smooth'})">
+                    Get Started Free
+                </button>
+            </div>
+
+            <div class="pricing-card featured">
+                <h3>Pro</h3>
+                <div class="price">$69</div>
+                <div class="price-period">per month</div>
+                <ul>
+                    <li>Unlimited deal analyses</li>
+                    <li>Cash & Novation offers</li>
+                    <li>Comp data with Zillow links</li>
+                    <li>Conservative / Fair / Aggressive tiers</li>
+                    <li>Deal history & saved analyses</li>
+                    <li>Priority support</li>
+                </ul>
+                <button class="btn-subscribe btn-gold" onclick="handleSubscribe()">
+                    Subscribe to Pro
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Upgrade overlay modal -->
+    <div class="upgrade-overlay" id="upgradeOverlay">
+        <div class="upgrade-modal">
+            <h2>Upgrade to Pro</h2>
+            <p id="upgradeMessage">You've used all 10 free analyses. Upgrade to Pro for unlimited deal underwriting at $69/mo.</p>
+            <button class="btn-subscribe btn-gold" onclick="handleSubscribe()" style="margin-bottom: 0.75rem;">
+                Subscribe to Pro - $69/mo
+            </button>
+            <br>
+            <button class="btn-close" onclick="closeUpgradeModal()">Maybe Later</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="underwriting-form">
+            <h2 style="color: #ffd700; margin-bottom: 1.5rem;">Property Underwriting</h2>
+
+            <!-- Usage tracking banner -->
+            <div class="usage-banner" id="usageBanner" style="display: none;">
+                <span class="usage-text" id="usageText"></span>
+                <button class="btn-upgrade" id="usageBannerUpgrade" onclick="handleSubscribe()" style="display: none;">Upgrade to Pro</button>
+            </div>
+
+            <div class="status-message" id="apiStatus">
+                API Status: <span id="apiStatusText">Checking...</span>
+            </div>
+            
+            <form id="underwritingForm" onsubmit="handleUnderwrite(event)">
+                <div class="form-group">
+                    <label>Property Address</label>
+                    <input type="text" id="address" placeholder="123 Main St, Nashville TN" required>
+                    <small>We'll pull local comps and estimate ARV/FMV</small>
+                </div>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem;">
+                    <div class="form-group">
+                        <label>Square Footage</label>
+                        <input type="number" id="squareFeet" placeholder="2500" required>
+                    </div>
+                    <div class="form-group">
+                        <label>Bedrooms</label>
+                        <select id="bedrooms" required>
+                            <option value="">Select bedrooms</option>
+                            <option value="1">1</option>
+                            <option value="2">2</option>
+                            <option value="3">3</option>
+                            <option value="4">4</option>
+                            <option value="5">5</option>
+                            <option value="6">6</option>
+                            <option value="7+">7+</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Bathrooms</label>
+                        <select id="bathrooms" required>
+                            <option value="">Select bathrooms</option>
+                            <option value="1">1</option>
+                            <option value="1.5">1.5</option>
+                            <option value="2">2</option>
+                            <option value="2.5">2.5</option>
+                            <option value="3">3</option>
+                            <option value="3.5">3.5</option>
+                            <option value="4">4</option>
+                            <option value="4+">4+</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label>Repair Level</label>
+                    
+                    <div class="repair-category" onclick="selectRepairCategory('none', 5, this)">
+                        <h4>None</h4>
+                        <p>$5/sqft - Move-in ready or cosmetic only</p>
+                    </div>
+                    
+                    <div class="repair-category" onclick="selectRepairCategory('light', 15, this)">
+                        <h4>Light</h4>
+                        <p>$15/sqft - Paint, carpet, minor updates</p>
+                    </div>
+                    
+                    <div class="repair-category" onclick="selectRepairCategory('medium', 30, this)">
+                        <h4>Medium</h4>
+                        <p>$30/sqft - Roof, HVAC, kitchens, bathrooms</p>
+                    </div>
+                    
+                    <div class="repair-category" onclick="selectRepairCategory('high', 45, this)">
+                        <h4>High</h4>
+                        <p>$45/sqft - Structural, plumbing, electrical, foundation issues</p>
+                    </div>
+                    
+                    <div class="repair-category" onclick="selectRepairCategory('fullgut', 60, this)">
+                        <h4>Full Gut Renovation</h4>
+                        <p>$60/sqft - Complete teardown and rebuild</p>
+                    </div>
+                    
+                    <div class="repair-category" onclick="selectRepairCategory('custom', 0, this)">
+                        <h4>Custom Amount</h4>
+                        <p>Enter your own total repair estimate</p>
+                    </div>
+                    
+                    <input type="number" id="customRepairs" placeholder="Enter total repair cost" style="display: none;">
+                </div>
+                
+                <div class="form-group">
+                    <label>Deal Type</label>
+                    <select id="dealType">
+                        <option value="cash">Cash Offer</option>
+                        <option value="novation">Novation</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>Assignment Fee (Optional)</label>
+                    <input type="number" id="assignmentFee" placeholder="e.g., 50000 for $50K assignment fee" min="5000">
+                    <small>Leave blank to see Conservative (25%), Fair (20%), Aggressive (15%) suggestions</small>
+                </div>
+                
+                <button type="submit" class="btn btn-primary" style="width: 100%; padding: 1rem; font-size: 1.1rem;">
+                    Analyze Deal
+                </button>
+            </form>
+        </div>
+        
+        <div id="results" class="results">
+            <h2 style="color: #ffd700; margin-bottom: 1.5rem;">📊 Deal Analysis</h2>
+            
+            <div style="background: #333; padding: 1.5rem; border-radius: 8px; margin-bottom: 1.5rem; border-left: 4px solid #ffd700;">
+                <p style="color: #999; margin-bottom: 0.5rem;">📍 <span id="resultAddress" style="color: #ffd700; font-weight: bold;"></span></p>
+                <p style="color: #999; margin-bottom: 0.5rem;">📐 <span id="resultSqft" style="color: #ffd700;"></span> sqft | <span id="resultBedBath" style="color: #ffd700;"></span></p>
+                <p style="color: #999;">🏗️ <span id="resultRepairs" style="color: #ffd700;"></span> repairs</p>
+            </div>
+            
+            <div class="comps-box">
+                <h3>📍 Comparable Sales (Recent Nearby - Click to Verify)</h3>
+                <div id="compsList"></div>
+                <div style="background: #1a1a1a; padding: 1rem; border-radius: 4px; margin-top: 1rem; text-align: center;">
+                    <p style="color: #999; font-size: 0.9rem;">Average of comps above</p>
+                    <p style="color: #ffd700; font-weight: bold; margin-top: 0.5rem;">ARV: <span id="arvDisplay" style="color: #27AE60; font-size: 1.3rem;">—</span></p>
+                    <p style="color: #ffd700; font-size: 0.9rem; margin-top: 0.5rem;">FMV: <span id="fmvDisplay" style="color: #27AE60;">—</span></p>
+                </div>
+            </div>
+            
+            <div class="comparison-table">
+                <h3>Offer Comparison at a Glance</h3>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Offer Type</th>
+                            <th>Your Offer</th>
+                            <th>Assignment Fee</th>
+                            <th>Profit</th>
+                            <th>Resale Price</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td style="color: #ffd700; font-weight: bold;">Conservative</td>
+                            <td class="value-positive" id="tableConservativeOffer">—</td>
+                            <td class="value-positive" id="tableConservativeAssignment">—</td>
+                            <td class="value-positive" id="tableConservativeProfit">—</td>
+                            <td class="value-positive" id="tableConservativeResale">—</td>
+                        </tr>
+                        <tr>
+                            <td style="color: #ffd700; font-weight: bold;">Fair (Recommended)</td>
+                            <td class="value-positive" id="tableFairOffer">—</td>
+                            <td class="value-positive" id="tableFairAssignment">—</td>
+                            <td class="value-positive" id="tableFairProfit">—</td>
+                            <td class="value-positive" id="tableFairResale">—</td>
+                        </tr>
+                        <tr>
+                            <td style="color: #ffd700; font-weight: bold;">Aggressive</td>
+                            <td class="value-positive" id="tableAggressiveOffer">—</td>
+                            <td class="value-positive" id="tableAggressiveAssignment">—</td>
+                            <td class="value-positive" id="tableAggressiveProfit">—</td>
+                            <td class="value-positive" id="tableAggressiveResale">—</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            
+            <div class="offer-card">
+                <div class="offer-header">
+                    <div class="offer-title">🛡️ Conservative Offer</div>
+                    <div class="offer-badge">Safest Play</div>
+                </div>
+                
+                <div class="offer-pricing">
+                    <div class="price-row">
+                        <span class="price-label">Your Offer:</span>
+                        <span class="price-value" id="conservativePrice">—</span>
+                    </div>
+                    <div class="price-row">
+                        <span class="price-label">Assignment Fee:</span>
+                        <span class="price-value" id="conservativeAssignment">—</span>
+                    </div>
+                    <div class="price-row">
+                        <span class="price-label">Your Profit:</span>
+                        <span class="price-value" id="conservativeProfit">—</span>
+                    </div>
+                    <div class="price-row">
+                        <span class="price-label">Resale Price:</span>
+                        <span class="price-value" id="conservativeResale">—</span>
+                    </div>
+                </div>
+                
+                <div class="offer-analysis">
+                    <h5>Strategy: Maximum Profit Margin</h5>
+                    <p>Use this when you want the safest deal with maximum margin for error. Builds in extra profit for unexpected repairs, holding costs, or market delays. Investor-buyers typically expect 25%+ margins to justify their capital and risk.</p>
+                    
+                    <h5>When to Use:</h5>
+                    <p>Uncertain repair estimates, market downturns, or when you want maximum negotiating room with the seller.</p>
+                </div>
+            </div>
+            
+            <div class="offer-card">
+                <div class="offer-header">
+                    <div class="offer-title">⭐ Fair Offer (Recommended)</div>
+                    <div class="offer-badge">Most Common</div>
+                </div>
+                
+                <div class="offer-pricing">
+                    <div class="price-row">
+                        <span class="price-label">Your Offer:</span>
+                        <span class="price-value" id="fairPrice">—</span>
+                    </div>
+                    <div class="price-row">
+                        <span class="price-label">Assignment Fee:</span>
+                        <span class="price-value" id="fairAssignment">—</span>
+                    </div>
+                    <div class="price-row">
+                        <span class="price-label">Your Profit:</span>
+                        <span class="price-value" id="fairProfit">—</span>
+                    </div>
+                    <div class="price-row">
+                        <span class="price-label">Resale Price:</span>
+                        <span class="price-value" id="fairResale">—</span>
+                    </div>
+                </div>
+                
+                <div class="offer-analysis">
+                    <h5>Strategy: Balanced Approach</h5>
+                    <p>Balances maximum seller acceptance with solid wholesaler profit. 20% is the sweet spot in wholesale—enough margin to cover all costs while still attractive to investors. Most active wholesalers operate in this 18-22% range.</p>
+                    
+                    <h5>When to Use:</h5>
+                    <p>Most deals. Strong acceptability from sellers, fair profit for you, competitive offer for buyers. Your go-to strategy.</p>
+                </div>
+            </div>
+            
+            <div class="offer-card">
+                <div class="offer-header">
+                    <div class="offer-title">⚡ Aggressive Offer</div>
+                    <div class="offer-badge">Quick Close</div>
+                </div>
+                
+                <div class="offer-pricing">
+                    <div class="price-row">
+                        <span class="price-label">Your Offer:</span>
+                        <span class="price-value" id="aggressivePrice">—</span>
+                    </div>
+                    <div class="price-row">
+                        <span class="price-label">Assignment Fee:</span>
+                        <span class="price-value" id="aggressiveAssignment">—</span>
+                    </div>
+                    <div class="price-row">
+                        <span class="price-label">Your Profit:</span>
+                        <span class="price-value" id="aggressiveProfit">—</span>
+                    </div>
+                    <div class="price-row">
+                        <span class="price-label">Resale Price:</span>
+                        <span class="price-value" id="aggressiveResale">—</span>
+                    </div>
+                </div>
+                
+                <div class="offer-analysis">
+                    <h5>Strategy: Quick Close Priority</h5>
+                    <p>Use when the deal is so good you don't need maximum margin, or when you need a quick close to beat competition. Compelling to motivated sellers because it's closer to market value. Cash buyers also love these deals.</p>
+                    
+                    <h5>When to Use:</h5>
+                    <p>Hot markets, bidding wars, when you need liquidity fast, or properties so good they sell themselves. Works well with cash buyers.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Determine API URL dynamically — same origin in production, localhost in dev
+        const API_URL = window.location.hostname === 'localhost'
+            ? 'http://localhost:3001'
+            : window.location.origin;
+
+        let selectedRepairCategory = null;
+        let selectedRepairRate = 0;
+        let currentAnalysisData = null;
+        let userSubscription = null;
+
+        // Generate or retrieve a persistent anonymous user ID
+        function getUserId() {
+            let userId = localStorage.getItem('dealuw_user_id');
+            if (!userId) {
+                userId = 'user_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+                localStorage.setItem('dealuw_user_id', userId);
+            }
+            return userId;
+        }
+
+        // Check for Stripe redirect parameters
+        function handleStripeRedirect() {
+            const params = new URLSearchParams(window.location.search);
+            const status = params.get('status');
+            const sessionId = params.get('session_id');
+
+            if (status === 'success') {
+                const banner = document.getElementById('successBanner');
+                banner.textContent = 'Payment successful! Your Pro subscription is now active. Enjoy unlimited analyses.';
+                banner.classList.add('active');
+                // Clean URL
+                window.history.replaceState({}, document.title, window.location.pathname);
+            } else if (status === 'canceled') {
+                const banner = document.getElementById('successBanner');
+                banner.textContent = 'Checkout canceled. You can subscribe anytime from the pricing section.';
+                banner.style.background = '#3a2a1a';
+                banner.style.borderColor = '#ffd700';
+                banner.style.color = '#ffd700';
+                banner.classList.add('active');
+                window.history.replaceState({}, document.title, window.location.pathname);
+            }
+        }
+
+        // Fetch subscription status from backend
+        async function checkSubscriptionStatus() {
+            const userId = getUserId();
+            try {
+                const response = await fetch(API_URL + '/api/subscription-status/' + encodeURIComponent(userId));
+                if (response.ok) {
+                    userSubscription = await response.json();
+                    updateUsageBanner();
+                }
+            } catch (e) {
+                console.log('Could not check subscription status:', e.message);
+            }
+        }
+
+        // Update the usage banner UI
+        function updateUsageBanner() {
+            const banner = document.getElementById('usageBanner');
+            const text = document.getElementById('usageText');
+            const upgradeBtn = document.getElementById('usageBannerUpgrade');
+
+            if (!userSubscription) return;
+
+            banner.style.display = 'flex';
+
+            if (userSubscription.subscribed) {
+                text.innerHTML = '<strong>Pro Plan</strong> — Unlimited analyses active';
+                upgradeBtn.style.display = 'none';
+                banner.style.borderColor = '#27AE60';
+            } else {
+                const remaining = Math.max(0, userSubscription.analysisLimit - userSubscription.analysisCount);
+                const daysLeft = userSubscription.trialDaysLeft;
+                text.innerHTML = `<strong>Free Trial</strong> — ${remaining} of ${userSubscription.analysisLimit} analyses remaining | ${daysLeft} days left`;
+
+                if (remaining <= 3 || daysLeft <= 2) {
+                    upgradeBtn.style.display = 'inline-block';
+                }
+
+                if (userSubscription.needsUpgrade) {
+                    text.innerHTML = `<strong>Free Trial Ended</strong> — Upgrade to Pro for unlimited analyses`;
+                    upgradeBtn.style.display = 'inline-block';
+                    banner.style.borderColor = '#e74c3c';
+                }
+            }
+        }
+
+        // Check if user can perform an analysis
+        function canAnalyze() {
+            if (!userSubscription) return true; // Allow if we haven't checked yet
+            if (userSubscription.subscribed) return true;
+            return !userSubscription.needsUpgrade;
+        }
+
+        // Show upgrade modal
+        function showUpgradeModal(message) {
+            if (message) {
+                document.getElementById('upgradeMessage').textContent = message;
+            }
+            document.getElementById('upgradeOverlay').classList.add('active');
+        }
+
+        function closeUpgradeModal() {
+            document.getElementById('upgradeOverlay').classList.remove('active');
+        }
+
+        // Handle subscribe button — redirect to Stripe Checkout
+        async function handleSubscribe() {
+            const userId = getUserId();
+            try {
+                const response = await fetch(API_URL + '/api/create-checkout-session', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId })
+                });
+
+                const data = await response.json();
+                if (data.url) {
+                    window.location.href = data.url;
+                } else {
+                    alert('Error creating checkout session: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Error connecting to server: ' + error.message);
+            }
+        }
+
+        // Track usage after a successful analysis
+        async function trackUsage() {
+            const userId = getUserId();
+            try {
+                const response = await fetch(API_URL + '/api/track-usage', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ userId })
+                });
+                if (response.ok) {
+                    // Refresh subscription status to update the banner
+                    await checkSubscriptionStatus();
+                }
+            } catch (e) {
+                console.log('Could not track usage:', e.message);
+            }
+        }
+
+        window.addEventListener('load', async () => {
+            handleStripeRedirect();
+
+            try {
+                const response = await fetch(API_URL + '/api/health');
+                if (response.ok) {
+                    document.getElementById('apiStatusText').textContent = 'Connected';
+                    document.getElementById('apiStatus').style.background = '#1a3a1a';
+                } else {
+                    document.getElementById('apiStatusText').textContent = 'API Error';
+                }
+            } catch (e) {
+                document.getElementById('apiStatusText').textContent = 'Offline';
+                document.getElementById('apiStatus').style.background = '#3a1a1a';
+            }
+
+            await checkSubscriptionStatus();
+        });
+        
+        function selectRepairCategory(category, rate, element) {
+            selectedRepairCategory = category;
+            selectedRepairRate = rate;
+            
+            document.querySelectorAll('.repair-category').forEach(el => {
+                el.classList.remove('selected');
+            });
+            
+            if (element && element.classList) {
+                element.classList.add('selected');
+            }
+            
+            const customInput = document.getElementById('customRepairs');
+            if (category === 'custom') {
+                customInput.style.display = 'block';
+            } else {
+                customInput.style.display = 'none';
+            }
+        }
+        
+        async function handleUnderwrite(event) {
+            event.preventDefault();
+            console.log('🔵 Form submitted');
+            
+            const address = document.getElementById('address').value;
+            const squareFeet = parseInt(document.getElementById('squareFeet').value);
+            const bedrooms = document.getElementById('bedrooms').value;
+            const bathrooms = document.getElementById('bathrooms').value;
+            const dealType = document.getElementById('dealType').value;
+            const assignmentFeeInput = document.getElementById('assignmentFee').value;
+            
+            console.log('Form values:', { address, squareFeet, bedrooms, bathrooms, dealType });
+            
+            if (!address || !squareFeet || !bedrooms || !bathrooms) {
+                alert('Please enter address, square footage, bedrooms, and bathrooms');
+                return;
+            }
+            
+            if (!selectedRepairCategory) {
+                alert('Please select a repair category');
+                return;
+            }
+
+            // Check subscription gate
+            if (!canAnalyze()) {
+                showUpgradeModal('You\'ve used all 10 free analyses. Upgrade to DealUW Pro for unlimited deal underwriting at $69/mo.');
+                return;
+            }
+
+            let repairs = 0;
+            if (selectedRepairCategory === 'custom') {
+                const customRepairsInput = parseInt(document.getElementById('customRepairs').value);
+                if (!customRepairsInput || customRepairsInput <= 0) {
+                    alert('Please enter a custom repair amount');
+                    return;
+                }
+                repairs = customRepairsInput;
+            } else {
+                repairs = squareFeet * selectedRepairRate;
+            }
+            
+            const customAssignmentFee = assignmentFeeInput ? parseInt(assignmentFeeInput) : null;
+            
+            try {
+                console.log('🟢 Starting analysis...');
+                
+                // Show results section and scroll to it
+                const resultsDiv = document.getElementById('results');
+                console.log('Results div found:', resultsDiv !== null);
+                resultsDiv.classList.add('active');
+                resultsDiv.scrollIntoView({ behavior: 'smooth' });
+                console.log('Results section shown');
+                
+                // Clear previous data display, show loading
+                document.getElementById('resultAddress').textContent = '🔄 Analyzing...';
+                document.getElementById('resultSqft').textContent = '';
+                document.getElementById('resultBedBath').textContent = '';
+                document.getElementById('resultRepairs').textContent = '';
+                console.log('Loading state set');
+                
+                const compsResponse = await fetch(API_URL + '/api/property/comps', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ address })
+                });
+                
+                if (!compsResponse.ok) throw new Error('Failed to fetch comps');
+                const compsData = await compsResponse.json();
+                
+                const offersResponse = await fetch(API_URL + '/api/calculate/offer-analysis', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        arv: compsData.estimatedARV, 
+                        repairs,
+                        dealType,
+                        assignmentFee: customAssignmentFee
+                    })
+                });
+                
+                if (!offersResponse.ok) throw new Error('Failed to calculate offers');
+                const offersData = await offersResponse.json();
+                
+                const bedBath = `${bedrooms} bed / ${bathrooms} bath`;
+                
+                console.log('Building analysis data...');
+                currentAnalysisData = {
+                    address,
+                    squareFeet,
+                    bedrooms,
+                    bathrooms,
+                    bedBath,
+                    repairs,
+                    arv: compsData.estimatedARV,
+                    fmv: compsData.estimatedFMV,
+                    comps: compsData.comps,
+                    dealType,
+                    customAssignmentFee,
+                    offers: offersData.offers
+                };
+                console.log('Data ready:', currentAnalysisData);
+                
+                console.log('Calling renderResults...');
+                renderResults();
+                console.log('Analysis complete!');
+
+                // Track usage for free tier users
+                await trackUsage();
+                
+            } catch (error) {
+                console.error('Full error:', error);
+                alert('❌ Error: ' + error.message + '\n\nCheck browser console for details.');
+                document.getElementById('resultAddress').textContent = '❌ Error loading results';
+            }
+        }
+        
+        function renderResults() {
+            if (!currentAnalysisData) {
+                console.error('No analysis data available');
+                return;
+            }
+            
+            try {
+                const data = currentAnalysisData;
+                
+                // Update property summary
+                document.getElementById('resultAddress').textContent = data.address;
+                document.getElementById('resultSqft').textContent = data.squareFeet.toLocaleString();
+                document.getElementById('resultBedBath').textContent = data.bedBath;
+                document.getElementById('resultRepairs').textContent = '$' + data.repairs.toLocaleString();
+                
+                // Update comps list
+                const compsList = document.getElementById('compsList');
+                compsList.innerHTML = data.comps.map(comp => `
+                    <div class="comp-item">
+                        <div>
+                            <span class="comp-address">${comp.address}</span>
+                            <p style="font-size: 0.85rem; color: #999; margin-top: 0.25rem;">Sold: ${comp.soldDate || 'Recently'}</p>
+                        </div>
+                        <div style="text-align: right;">
+                            <span class="comp-price">$${comp.soldPrice.toLocaleString()}</span>
+                            <a href="${comp.url}" target="_blank" class="comp-link" style="margin-left: 1rem;">
+                                ${comp.source || 'Verify'} ↗
+                            </a>
+                        </div>
+                    </div>
+                `).join('');
+                
+                // Update ARV/FMV
+                document.getElementById('arvDisplay').textContent = '$' + data.arv.toLocaleString();
+                document.getElementById('fmvDisplay').textContent = '$' + data.fmv.toLocaleString();
+                
+                // Get offers based on custom fee or suggestions
+                let conservative, fair, aggressive;
+                
+                if (data.customAssignmentFee) {
+                    const custom = data.offers.custom;
+                    conservative = custom;
+                    fair = custom;
+                    aggressive = custom;
+                } else {
+                    conservative = data.offers.conservative;
+                    fair = data.offers.fair;
+                    aggressive = data.offers.aggressive;
+                }
+                
+                // Update all three offer tiers
+                [
+                    { prefix: 'conservative', offer: conservative },
+                    { prefix: 'fair', offer: fair },
+                    { prefix: 'aggressive', offer: aggressive }
+                ].forEach(({ prefix, offer }) => {
+                    document.getElementById(`${prefix}Price`).textContent = '$' + offer.offerPrice.toLocaleString();
+                    document.getElementById(`${prefix}Assignment`).textContent = '$' + offer.assignmentFee.toLocaleString();
+                    document.getElementById(`${prefix}Profit`).textContent = '$' + offer.profit.toLocaleString();
+                    document.getElementById(`${prefix}Resale`).textContent = '$' + (offer.offerPrice + offer.profit).toLocaleString();
+                    
+                    const capPrefix = prefix.charAt(0).toUpperCase() + prefix.slice(1);
+                    document.getElementById(`table${capPrefix}Offer`).textContent = '$' + offer.offerPrice.toLocaleString();
+                    document.getElementById(`table${capPrefix}Assignment`).textContent = '$' + offer.assignmentFee.toLocaleString();
+                    document.getElementById(`table${capPrefix}Profit`).textContent = '$' + offer.profit.toLocaleString();
+                    document.getElementById(`table${capPrefix}Resale`).textContent = '$' + (offer.offerPrice + offer.profit).toLocaleString();
+                });
+                
+                console.log('✅ Results rendered successfully');
+                
+            } catch (error) {
+                console.error('Error rendering results:', error);
+                alert('Error displaying results: ' + error.message);
+            }
+        }
+    </script>
+</body>
+</html>
