@@ -13,6 +13,93 @@ const stripeClient = stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_dummy');
 // Supabase service role client for server-side operations
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://qmgizjauopuxmyztlmza.supabase.co';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const RENTCAST_API_KEY = process.env.RENTCAST_API_KEY || '';
+
+// ============ RENTCAST PROPERTY DATA ============
+async function fetchRentCastProperty(address) {
+  if (!RENTCAST_API_KEY) return null;
+  try {
+    const res = await fetch(`https://api.rentcast.io/v1/properties?address=${encodeURIComponent(address)}`, {
+      headers: { 'X-Api-Key': RENTCAST_API_KEY, 'Accept': 'application/json' }
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return Array.isArray(data) && data.length > 0 ? data[0] : null;
+  } catch (err) {
+    console.error('RentCast property fetch error:', err.message);
+    return null;
+  }
+}
+
+async function fetchRentCastComps(address) {
+  if (!RENTCAST_API_KEY) return null;
+  try {
+    const res = await fetch(`https://api.rentcast.io/v1/avm/sale-comparables?address=${encodeURIComponent(address)}&limit=5`, {
+      headers: { 'X-Api-Key': RENTCAST_API_KEY, 'Accept': 'application/json' }
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data;
+  } catch (err) {
+    console.error('RentCast comps fetch error:', err.message);
+    return null;
+  }
+}
+
+async function fetchRentCastValue(address) {
+  if (!RENTCAST_API_KEY) return null;
+  try {
+    const res = await fetch(`https://api.rentcast.io/v1/avm/value?address=${encodeURIComponent(address)}`, {
+      headers: { 'X-Api-Key': RENTCAST_API_KEY, 'Accept': 'application/json' }
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (err) {
+    console.error('RentCast value fetch error:', err.message);
+    return null;
+  }
+}
+
+async function getRealComps(address) {
+  const compsData = await fetchRentCastComps(address);
+  if (!compsData || !compsData.comparables || compsData.comparables.length === 0) return null;
+
+  const comps = compsData.comparables.slice(0, 5).map(c => ({
+    address: c.formattedAddress || c.addressLine1 || 'Unknown',
+    soldPrice: c.price || c.lastSalePrice || 0,
+    daysOnMarket: c.daysOnMarket || 0,
+    source: 'RentCast / Public Records',
+    url: '',
+    soldDate: c.lastSaleDate || c.listedDate || '',
+    beds: c.bedrooms,
+    baths: c.bathrooms,
+    sqft: c.squareFootage,
+    distance: c.distance ? `${c.distance.toFixed(2)} mi` : ''
+  }));
+
+  const priceEstimate = compsData.priceEstimate || null;
+  const priceLow = compsData.priceRangeLow || null;
+  const priceHigh = compsData.priceRangeHigh || null;
+
+  return { comps, priceEstimate, priceLow, priceHigh };
+}
+
+async function getPropertyDetails(address) {
+  const property = await fetchRentCastProperty(address);
+  if (!property) return null;
+  return {
+    address: property.formattedAddress,
+    beds: property.bedrooms,
+    baths: property.bathrooms,
+    sqft: property.squareFootage,
+    yearBuilt: property.yearBuilt,
+    lotSize: property.lotSize,
+    propertyType: property.propertyType,
+    lastSalePrice: property.lastSalePrice,
+    lastSaleDate: property.lastSaleDate,
+    taxAssessment: property.taxAssessment
+  };
+}
 
 // Helper to call Supabase REST API with service role
 async function supabaseAdmin(tablePath, options = {}) {
@@ -373,6 +460,24 @@ app.post('/api/property/comps', async (req, res) => {
     const { address } = req.body;
     if (!address) return res.status(400).json({ error: 'Address is required' });
 
+    // Try real data first
+    const realData = await getRealComps(address);
+    if (realData && realData.comps.length > 0) {
+      const arv = realData.priceEstimate || estimateARV(realData.comps);
+      const fmv = Math.round(arv * 0.95);
+      return res.json({
+        address,
+        comps: realData.comps,
+        estimatedARV: arv,
+        estimatedFMV: fmv,
+        priceRangeLow: realData.priceLow,
+        priceRangeHigh: realData.priceHigh,
+        dataSource: 'RentCast / Public Records',
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    // Fallback to mock data
     const comps = getMockComps(address);
     const arv = estimateARV(comps);
     const fmv = Math.round(arv * 0.95);
@@ -382,6 +487,7 @@ app.post('/api/property/comps', async (req, res) => {
       comps,
       estimatedARV: arv,
       estimatedFMV: fmv,
+      dataSource: 'Estimated (real data unavailable for this address)',
       timestamp: new Date().toISOString()
     });
   } catch (error) {
@@ -443,13 +549,40 @@ app.post('/api/property/upload-photos', upload.array('photos', 5), async (req, r
 });
 
 // Full analysis endpoint
+// Property details endpoint
+app.post('/api/property/details', async (req, res) => {
+  try {
+    const { address } = req.body;
+    if (!address) return res.status(400).json({ error: 'Address is required' });
+
+    const details = await getPropertyDetails(address);
+    if (details) {
+      return res.json({ ...details, dataSource: 'RentCast / Public Records' });
+    }
+    res.json({ address, dataSource: 'No data available — enter details manually' });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 app.post('/api/property/full-analysis', async (req, res) => {
   try {
     const { address, squareFeet, bedBath, repairCategory, customRepairs, dealType } = req.body;
 
-    const comps = getMockComps(address);
-    const arv = estimateARV(comps);
-    const fmv = Math.round(arv * 0.95);
+    // Try real comps first
+    let comps, arv, fmv, dataSource;
+    const realData = await getRealComps(address);
+    if (realData && realData.comps.length > 0) {
+      comps = realData.comps;
+      arv = realData.priceEstimate || estimateARV(comps);
+      fmv = Math.round(arv * 0.95);
+      dataSource = 'RentCast / Public Records';
+    } else {
+      comps = getMockComps(address);
+      arv = estimateARV(comps);
+      fmv = Math.round(arv * 0.95);
+      dataSource = 'Estimated (real data unavailable)';
+    }
 
     const repairRates = { none: 5, light: 15, medium: 30, high: 45, fullgut: 60 };
     let repairs = 0;
@@ -467,7 +600,7 @@ app.post('/api/property/full-analysis', async (req, res) => {
     }
 
     res.json({
-      address, squareFeet, bedBath, repairs, arv, fmv, comps, offers, dealType,
+      address, squareFeet, bedBath, repairs, arv, fmv, comps, offers, dealType, dataSource,
       analysis: {
         bestOffer: offers.fair.offerPrice,
         recommendedAssignmentFee: offers.fair.assignmentFee,
