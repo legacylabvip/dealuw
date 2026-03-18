@@ -1159,12 +1159,23 @@
     // ============================================================
     // AUTH STATE
     // ============================================================
+    let authLoading = false;
     async function onAuthStateChanged(session) {
+        if (authLoading) return;
         if (session && session.user) {
+            authLoading = true;
             currentUser = session.user;
-            await loadProfile();
-            await loadDeals();
+            // Show UI immediately, load data in background
             updateUIForAuth(true);
+            hideAuthModal();
+            try {
+                await loadProfile();
+                updateUIForAuth(true); // refresh with profile data
+                loadDeals(); // don't await — load in background
+            } catch (err) {
+                console.error('Auth load error:', err);
+            }
+            authLoading = false;
         } else {
             currentUser = null;
             currentProfile = null;
@@ -1196,11 +1207,10 @@
                 .from('profiles')
                 .select('*')
                 .eq('id', currentUser.id)
-                .single();
+                .maybeSingle();
 
-            if (error && error.code === 'PGRST116') {
-                // Profile doesn't exist yet, create it
-                const now = new Date().toISOString();
+            if (!data) {
+                // Profile doesn't exist — create it
                 const newProfile = {
                     id: currentUser.id,
                     email: currentUser.email,
@@ -1217,16 +1227,20 @@
                     .from('profiles')
                     .upsert(newProfile, { onConflict: 'id' })
                     .select()
-                    .single();
-                if (createErr) throw createErr;
-                currentProfile = created;
-            } else if (error) {
-                throw error;
+                    .maybeSingle();
+                currentProfile = created || newProfile;
             } else {
                 currentProfile = data;
             }
         } catch (err) {
             console.error('Load profile error:', err);
+            // Fallback — let them use the app with defaults
+            currentProfile = {
+                email: currentUser.email,
+                subscription_tier: 'free',
+                analysis_count: 0,
+                analysis_limit: 10
+            };
         }
     }
 
