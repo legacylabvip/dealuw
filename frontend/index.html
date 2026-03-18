@@ -364,6 +364,39 @@
         .deal-action-btn:hover { border-color: #ffd700; color: #ffd700; }
         .deal-action-btn.danger { border-color: #e74c3c; color: #e74c3c; }
         .deal-action-btn.danger:hover { background: #3a1a1a; }
+        .deal-action-btn.dispo { border-color: #f39c12; color: #f39c12; background: #3a2a0a; font-weight: 600; }
+        .deal-action-btn.dispo:hover { background: #4a3a1a; border-color: #ffd700; color: #ffd700; }
+        .dispo-badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 8px; font-size: 0.7rem; font-weight: bold; background: #3a2a0a; color: #f39c12; border: 1px solid #f39c12; margin-left: 0.5rem; }
+
+        /* Dispo Modal */
+        .dispo-modal-overlay {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.8); z-index: 1000;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .dispo-modal {
+            background: #1a1a1a; border: 1px solid #ffd700; border-radius: 12px;
+            padding: 2rem; max-width: 550px; width: 90%; max-height: 90vh; overflow-y: auto;
+        }
+        .dispo-modal h2 { color: #ffd700; margin-bottom: 0.5rem; font-size: 1.3rem; }
+        .dispo-modal .subtitle { color: #999; margin-bottom: 1.5rem; font-size: 0.9rem; }
+        .dispo-deal-summary {
+            background: #2a2a2a; border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem;
+        }
+        .dispo-deal-summary .row { display: flex; justify-content: space-between; padding: 0.3rem 0; font-size: 0.9rem; }
+        .dispo-deal-summary .row .label { color: #999; }
+        .dispo-deal-summary .row .val { color: #27AE60; font-weight: 600; }
+        .dispo-terms {
+            background: #0f0f0f; border: 1px solid #333; border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem;
+        }
+        .dispo-terms h3 { color: #ffd700; font-size: 1rem; margin-bottom: 0.75rem; }
+        .dispo-terms ul { list-style: none; padding: 0; }
+        .dispo-terms ul li { padding: 0.3rem 0; color: #ccc; font-size: 0.9rem; }
+        .dispo-terms ul li::before { content: "✓ "; color: #27AE60; font-weight: bold; }
+        .dispo-notes { width: 100%; background: #2a2a2a; border: 1px solid #444; border-radius: 6px; color: #fff; padding: 0.75rem; font-size: 0.9rem; min-height: 80px; resize: vertical; margin-bottom: 1rem; }
+        .dispo-notes:focus { border-color: #ffd700; outline: none; }
+        .dispo-buttons { display: flex; gap: 0.75rem; }
+        .dispo-buttons .btn { flex: 1; }
         .deal-analysis-preview {
             background: #1a1a1a; border-radius: 6px; padding: 1rem; margin-top: 0.75rem;
         }
@@ -804,6 +837,31 @@
                         <small>Analyze a property above to start building your pipeline</small>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Dispo Help Modal -->
+    <div class="dispo-modal-overlay" id="dispoModal" style="display:none;">
+        <div class="dispo-modal">
+            <h2>Need Help Disposing This Deal?</h2>
+            <p class="subtitle">Our team at Arctic Acquisitions will JV with you to find a qualified buyer and close the deal. We handle the dispo — you keep the deal.</p>
+            <div class="dispo-deal-summary" id="dispoDealSummary"></div>
+            <div class="dispo-terms">
+                <h3>How the JV Works</h3>
+                <ul>
+                    <li>We market your deal to our national buyer network</li>
+                    <li>We handle all buyer communication and negotiations</li>
+                    <li>Standard 50/50 split on the assignment fee</li>
+                    <li>You stay in control — nothing moves without your approval</li>
+                    <li>No upfront cost — we only get paid when the deal closes</li>
+                </ul>
+            </div>
+            <label style="color:#999;font-size:0.85rem;display:block;margin-bottom:0.5rem;">Notes for our team (optional):</label>
+            <textarea class="dispo-notes" id="dispoNotes" placeholder="Any details about the deal, seller situation, timeline, etc..."></textarea>
+            <div class="dispo-buttons">
+                <button class="btn" style="background:#333;color:#999;border:1px solid #444;" onclick="closeDispoModal()">Cancel</button>
+                <button class="btn btn-primary" id="dispoSubmitBtn" onclick="submitDispoRequest()">Request Dispo Help</button>
             </div>
         </div>
     </div>
@@ -1511,7 +1569,7 @@
                     <div class="deal-card-header">
                         <div>
                             <div class="deal-address">${deal.address}</div>
-                            <div class="deal-meta">${dateStr} | ${deal.deal_type === 'novation' ? 'Novation' : 'Cash'} | ${deal.beds || '?'}bd/${deal.baths || '?'}ba | <span class="deal-badge ${badgeClass}">${stageLabel}</span></div>
+                            <div class="deal-meta">${dateStr} | ${deal.deal_type === 'novation' ? 'Novation' : 'Cash'} | ${deal.beds || '?'}bd/${deal.baths || '?'}ba | <span class="deal-badge ${badgeClass}">${stageLabel}</span>${deal.dispo_requested ? '<span class="dispo-badge">DISPO REQUESTED</span>' : ''}</div>
                         </div>
                         <div class="deal-numbers">
                             <div class="deal-stat"><div class="deal-stat-label">ARV</div><div class="deal-stat-value">$${(deal.arv || 0).toLocaleString()}</div></div>
@@ -1523,6 +1581,7 @@
                         ${analysisHtml}
                         <div class="deal-actions">
                             ${stageButtons}
+                            ${deal.pipeline_stage === 'under_contract' ? `<button class="deal-action-btn dispo" onclick="event.stopPropagation(); openDispoModal('${deal.id}')">🤝 Get Dispo Help</button>` : ''}
                             <button class="deal-action-btn danger" onclick="event.stopPropagation(); deleteDeal('${deal.id}')">Delete</button>
                         </div>
                     </div>
@@ -1583,6 +1642,110 @@
             alert('Failed to delete deal: ' + err.message);
         }
     }
+
+    // ============================================================
+    // DISPO HELP SYSTEM
+    // ============================================================
+    let currentDispoDealId = null;
+
+    function openDispoModal(dealId) {
+        const deal = allDeals.find(d => d.id === dealId);
+        if (!deal) return;
+        currentDispoDealId = dealId;
+
+        const summary = document.getElementById('dispoDealSummary');
+        summary.innerHTML = `
+            <div class="row"><span class="label">Property</span><span class="val">${deal.address}</span></div>
+            <div class="row"><span class="label">ARV</span><span class="val">$${(deal.arv || 0).toLocaleString()}</span></div>
+            <div class="row"><span class="label">Fair Offer</span><span class="val">$${(deal.fair_offer || 0).toLocaleString()}</span></div>
+            <div class="row"><span class="label">Repairs</span><span class="val">$${(deal.repairs || 0).toLocaleString()}</span></div>
+            <div class="row"><span class="label">Assignment Fee</span><span class="val">$${(deal.assignment_fee || 0).toLocaleString()}</span></div>
+            <div class="row"><span class="label">Deal Type</span><span class="val">${deal.deal_type === 'novation' ? 'Novation' : 'Cash'}</span></div>
+        `;
+
+        document.getElementById('dispoNotes').value = '';
+        document.getElementById('dispoSubmitBtn').disabled = false;
+        document.getElementById('dispoSubmitBtn').textContent = 'Request Dispo Help';
+        document.getElementById('dispoModal').style.display = 'flex';
+    }
+
+    function closeDispoModal() {
+        document.getElementById('dispoModal').style.display = 'none';
+        currentDispoDealId = null;
+    }
+
+    async function submitDispoRequest() {
+        if (!currentDispoDealId || !currentUser) return;
+        const deal = allDeals.find(d => d.id === currentDispoDealId);
+        if (!deal) return;
+
+        const btn = document.getElementById('dispoSubmitBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Submitting...';
+
+        try {
+            const notes = document.getElementById('dispoNotes').value;
+
+            // Save dispo request to Supabase
+            const { error } = await supabase.from('dispo_requests').insert({
+                deal_id: deal.id,
+                user_id: currentUser.id,
+                user_email: currentProfile.email,
+                user_name: currentProfile.full_name || '',
+                user_phone: currentProfile.phone || '',
+                address: deal.address,
+                arv: deal.arv,
+                fair_offer: deal.fair_offer,
+                assignment_fee: deal.assignment_fee,
+                deal_type: deal.deal_type,
+                notes: notes,
+                status: 'new',
+                jv_split: '50/50'
+            });
+
+            if (error) throw error;
+
+            // Send notification email via backend
+            try {
+                await fetch(API_URL + '/api/dispo-notify', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        dealId: deal.id,
+                        address: deal.address,
+                        arv: deal.arv,
+                        fairOffer: deal.fair_offer,
+                        assignmentFee: deal.assignment_fee,
+                        dealType: deal.deal_type,
+                        repairs: deal.repairs,
+                        userName: currentProfile.full_name,
+                        userEmail: currentProfile.email,
+                        userPhone: currentProfile.phone,
+                        notes: notes
+                    })
+                });
+            } catch (emailErr) {
+                console.warn('Dispo email notification failed (non-critical):', emailErr);
+            }
+
+            // Mark deal as dispo requested locally
+            deal.dispo_requested = true;
+
+            closeDispoModal();
+            renderPipeline();
+            alert('Dispo request submitted! Our team will reach out within 24 hours to discuss the JV.');
+        } catch (err) {
+            console.error('Dispo request error:', err);
+            alert('Failed to submit request: ' + err.message);
+            btn.disabled = false;
+            btn.textContent = 'Request Dispo Help';
+        }
+    }
+
+    // Close dispo modal on outside click
+    document.getElementById('dispoModal').addEventListener('click', function(e) {
+        if (e.target === this) closeDispoModal();
+    });
 
     // ============================================================
     // INITIALIZATION

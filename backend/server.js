@@ -552,6 +552,63 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// ============================================================
+// DISPO HELP NOTIFICATION
+// ============================================================
+app.post('/api/dispo-notify', async (req, res) => {
+  try {
+    const { dealId, address, arv, fairOffer, assignmentFee, dealType, repairs, userName, userEmail, userPhone, notes } = req.body;
+
+    // Send email notification via SMTP (Gmail)
+    const nodemailer = require('nodemailer');
+    const transporter = nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 587,
+      secure: false,
+      auth: {
+        user: process.env.DISPO_EMAIL_USER || 'zoria@gradeyi.me',
+        pass: process.env.DISPO_EMAIL_PASS || ''
+      }
+    });
+
+    const emailBody = `
+NEW DISPO REQUEST FROM DEALUW
+
+Property: ${address}
+Deal Type: ${dealType === 'novation' ? 'Novation' : 'Cash'}
+ARV: $${Number(arv || 0).toLocaleString()}
+Fair Offer: $${Number(fairOffer || 0).toLocaleString()}
+Repairs: $${Number(repairs || 0).toLocaleString()}
+Assignment Fee: $${Number(assignmentFee || 0).toLocaleString()}
+JV Split: 50/50
+
+CONTACT INFO:
+Name: ${userName || 'Not provided'}
+Email: ${userEmail}
+Phone: ${userPhone || 'Not provided'}
+
+Notes: ${notes || 'None'}
+
+---
+Action Required: Review deal and contact ${userName || userEmail} within 24 hours.
+Deal ID: ${dealId}
+    `.trim();
+
+    await transporter.sendMail({
+      from: '"DealUW Dispo Alerts" <zoria@gradeyi.me>',
+      to: 'connect@gradeyi.me',
+      subject: `[DISPO REQUEST] ${address} — $${Number(assignmentFee || 0).toLocaleString()} assignment fee`,
+      text: emailBody
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Dispo notification error:', err);
+    // Don't fail the request — the dispo was saved to DB already
+    res.json({ success: false, message: 'Notification failed but request was saved' });
+  }
+});
+
 // Serve frontend static files
 app.use(express.static(path.join(__dirname, '..', 'frontend')));
 
