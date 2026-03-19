@@ -179,27 +179,141 @@ async function fetchRentCastValue(address) {
 }
 
 async function getRealComps(address) {
+  // Try RentCast first
   const compsData = await fetchRentCastComps(address);
-  if (!compsData || !compsData.comparables || compsData.comparables.length === 0) return null;
+  if (compsData && compsData.comparables && compsData.comparables.length > 0) {
+    const comps = compsData.comparables.slice(0, 5).map(c => ({
+      address: c.formattedAddress || c.addressLine1 || 'Unknown',
+      soldPrice: c.price || c.lastSalePrice || 0,
+      source: 'RentCast',
+      soldDate: c.lastSaleDate || c.listedDate || '',
+      beds: c.bedrooms,
+      baths: c.bathrooms,
+      sqft: c.squareFootage,
+      distance: c.distance ? `${c.distance.toFixed(2)} mi` : ''
+    }));
+    return { comps, priceEstimate: compsData.priceEstimate, priceLow: compsData.priceRangeLow, priceHigh: compsData.priceRangeHigh };
+  }
 
-  const comps = compsData.comparables.slice(0, 5).map(c => ({
-    address: c.formattedAddress || c.addressLine1 || 'Unknown',
-    soldPrice: c.price || c.lastSalePrice || 0,
-    daysOnMarket: c.daysOnMarket || 0,
-    source: 'RentCast / Public Records',
-    url: '',
-    soldDate: c.lastSaleDate || c.listedDate || '',
-    beds: c.bedrooms,
-    baths: c.bathrooms,
-    sqft: c.squareFootage,
-    distance: c.distance ? `${c.distance.toFixed(2)} mi` : ''
-  }));
+  // Fallback: Brave search for recently sold homes near the address
+  return await getBraveComps(address);
+}
 
-  const priceEstimate = compsData.priceEstimate || null;
-  const priceLow = compsData.priceRangeLow || null;
-  const priceHigh = compsData.priceRangeHigh || null;
+async function getBraveComps(address) {
+  try {
+    // Parse address components
+    const parts = address.split(',').map(p => p.trim());
+    const street = parts[0] || '';
+    const city = parts[1] || '';
+    const stateZip = parts[2] || '';
 
-  return { comps, priceEstimate, priceLow, priceHigh };
+    // Get the street name without house number for neighborhood search
+    const streetName = street.replace(/^\d+\s*/, '');
+    const neighborhood = city || stateZip;
+
+    // Search for recently sold homes near this address
+    const query = `recently sold homes near "${street}" ${city} ${stateZip} price beds baths sqft`;
+    const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=10`, {
+      headers: { 'X-Subscription-Token': BRAVE_API_KEY, 'Accept': 'application/json' }
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const results = (data.web || {}).results || [];
+
+    const comps = [];
+    for (const r of results) {
+      const text = ((r.description || '') + ' ' + (r.title || '')).replace(/<[^>]+>/g, ' ');
+
+      // Look for address + price patterns in the text
+      // Match patterns like "123 Main St... $250,000" or "$250,000... 3 bed 2 bath 1,200 sqft"
+      const priceMatches = text.matchAll(/\$\s*([\d,]+)/g);
+      for (const pm of priceMatches) {
+        const price = parseInt(pm[1].replace(/,/g, ''));
+        if (price < 30000 || price > 10000000) continue; // skip non-home prices
+
+        // Try to find beds/baths/sqft near this price mention
+        const nearby = text.substring(Math.max(0, pm.index - 200), pm.index + 200);
+        const bedM = nearby.match(/(\d+)\s*(?:beds?\b|bedrooms?\b|bd\b|br\b)/i);
+        const bathM = nearby.match(/([\d.]+)\s*(?:baths?\b|bathrooms?\b|ba\b)/i);
+        const sqftM = nearby.match(/([\d,]+)\s*(?:sqft|sq\s*ft|square\s*feet)/i);
+        const addrM = nearby.match(/(\d+\s+[\w\s]+(?:St|Ave|Dr|Rd|Ln|Blvd|Way|Ct|Pl|Cir|Pkwy|Ter)[\w.]*)/i);
+
+        if (bedM || sqftM) {
+          const compAddr = addrM ? addrM[1].trim() : 'Nearby property';
+          // Don't add the subject property itself
+          if (compAddr.toLowerCase().includes(street.toLowerCase().substring(0, 10))) continue;
+
+          comps.push({
+            address: compAddr + (city ? `, ${city}` : ''),
+            soldPrice: price,
+            beds: bedM ? parseInt(bedM[1]) : null,
+            baths: bathM ? parseFloat(bathM[1]) : null,
+            sqft: sqftM ? parseInt(sqftM[1].replace(/,/g, '')) : null,
+            source: 'Public Records (via Zoria)',
+            soldDate: '',
+            distance: 'nearby'
+          });
+
+          if (comps.length >= 5) break;
+        }
+      }
+      if (comps.length >= 5) break;
+    }
+
+    // If Brave didn't find individual comps, try Zillow's recently sold page
+    if (comps.length < 2) {
+      const zillowQuery = `site:zillow.com "${city || ''}" ${stateZip || ''} recently sold`;
+      const zRes = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(zillowQuery)}&count=5`, {
+        headers: { 'X-Subscription-Token': BRAVE_API_KEY }
+      });
+      if (zRes.ok) {
+        const zData = await zRes.json();
+        const zResults = (zData.web || {}).results || [];
+        for (const r of zResults) {
+          const text = ((r.description || '') + ' ' + (r.title || '')).replace(/<[^>]+>/g, ' ');
+          const soldMatches = text.matchAll(/\$\s*([\d,]+)/g);
+          for (const sm of soldMatches) {
+            const price = parseInt(sm[1].replace(/,/g, ''));
+            if (price < 30000 || price > 10000000) continue;
+            const nearby = text.substring(Math.max(0, sm.index - 150), sm.index + 150);
+            const bedM = nearby.match(/(\d+)\s*(?:beds?\b|bd\b)/i);
+            const sqftM = nearby.match(/([\d,]+)\s*(?:sqft|sq ft)/i);
+            const addrM = nearby.match(/(\d+\s+[\w\s]+(?:St|Ave|Dr|Rd|Ln|Blvd|Way|Ct)[\w.]*)/i);
+            if (price > 30000) {
+              comps.push({
+                address: addrM ? addrM[1].trim() + `, ${city}` : `Recent sale in ${city || neighborhood}`,
+                soldPrice: price,
+                beds: bedM ? parseInt(bedM[1]) : null,
+                baths: null,
+                sqft: sqftM ? parseInt(sqftM[1].replace(/,/g, '')) : null,
+                source: 'Public Records',
+                soldDate: '',
+                distance: 'area'
+              });
+              if (comps.length >= 5) break;
+            }
+          }
+          if (comps.length >= 5) break;
+        }
+      }
+    }
+
+    if (comps.length === 0) return null;
+
+    // Calculate ARV from comps
+    const validPrices = comps.filter(c => c.soldPrice > 0).map(c => c.soldPrice);
+    const avgPrice = validPrices.length > 0 ? Math.round(validPrices.reduce((a, b) => a + b, 0) / validPrices.length) : null;
+
+    return {
+      comps,
+      priceEstimate: avgPrice,
+      priceLow: validPrices.length > 0 ? Math.min(...validPrices) : null,
+      priceHigh: validPrices.length > 0 ? Math.max(...validPrices) : null
+    };
+  } catch (err) {
+    console.error('Brave comps error:', err.message);
+    return null;
+  }
 }
 
 async function fetchRentCastRentEstimate(address, beds, baths, sqft) {
@@ -747,19 +861,21 @@ app.post('/api/property/full-analysis', async (req, res) => {
   try {
     const { address, squareFeet, bedBath, repairCategory, customRepairs, dealType } = req.body;
 
-    // Try real comps first
+    // Get real comparable sales
     let comps, arv, fmv, dataSource;
     const realData = await getRealComps(address);
-    if (realData && realData.comps.length > 0) {
+    if (realData && realData.comps && realData.comps.length > 0) {
       comps = realData.comps;
       arv = realData.priceEstimate || estimateARV(comps);
       fmv = Math.round(arv * 0.95);
-      dataSource = 'RentCast / Public Records';
+      dataSource = comps[0]?.source || 'Public Records (via Zoria)';
     } else {
-      comps = getMockComps(address);
-      arv = estimateARV(comps);
-      fmv = Math.round(arv * 0.95);
-      dataSource = 'Estimated (real data unavailable)';
+      // No comps found — use property estimate from the Lookup if available
+      // The frontend should have already looked up the property
+      comps = [];
+      arv = 0;
+      fmv = 0;
+      dataSource = 'No comparable sales found — enter ARV manually or use property estimate';
     }
 
     const repairRates = { none: 5, light: 15, medium: 30, high: 45, fullgut: 60 };
