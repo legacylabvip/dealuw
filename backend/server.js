@@ -38,19 +38,57 @@ async function fetchRentCastProperty(address) {
 async function fetchPropertyViaBrave(address) {
   try {
     const streetParts = address.split(',')[0].trim();
-    const query = `"${streetParts}" ${address.replace(streetParts, '').trim()} beds baths sqft`;
+    const restOfAddress = address.replace(streetParts, '').trim().replace(/^,\s*/, '');
 
-    const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=10`, {
+    // Search 1: Property record (works for off-market AND on-market)
+    const query1 = `"${streetParts}" ${restOfAddress} property details`;
+    const res1 = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query1)}&count=10`, {
       headers: { 'X-Subscription-Token': BRAVE_API_KEY, 'Accept': 'application/json' }
     });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const allResults = (data.web || {}).results || [];
 
-    // Filter to actual property listing pages only
-    const listingSites = ['zillow.com/homedetails', 'trulia.com/home', 'trulia.com/p/',
-      'realtor.com/realestateandhomes-detail', 'redfin.com/', 'homes.com/'];
-    const results = allResults.filter(r => listingSites.some(s => (r.url || '').includes(s)));
+    let allResults = [];
+    if (res1.ok) {
+      const data1 = await res1.json();
+      allResults = (data1.web || {}).results || [];
+    }
+
+    // If first search didn't find enough, try with address only
+    if (allResults.length < 3) {
+      const query2 = `"${streetParts}" ${restOfAddress}`;
+      const res2 = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query2)}&count=10`, {
+        headers: { 'X-Subscription-Token': BRAVE_API_KEY, 'Accept': 'application/json' }
+      });
+      if (res2.ok) {
+        const data2 = await res2.json();
+        const moreResults = (data2.web || {}).results || [];
+        // Add new results that aren't duplicates
+        const existingUrls = new Set(allResults.map(r => r.url));
+        for (const r of moreResults) {
+          if (!existingUrls.has(r.url)) allResults.push(r);
+        }
+      }
+    }
+
+    // Accept property data from many sources — not just active listings
+    const propertySites = [
+      'zillow.com/homedetails', 'trulia.com/home', 'trulia.com/p/',
+      'realtor.com/realestateandhomes-detail', 'redfin.com/',
+      'homes.com/', 'movoto.com/',
+      // County/tax/assessor records
+      'county', 'assessor', 'tax', 'property-records', 'propertyshark',
+      'blockshopper', 'homefacts', 'neighborwho', 'xome.com',
+      // Other property data sources
+      'spokeo.com/address', 'whitepages.com/', 'housecanary.com',
+      'estately.com/', 'homesnap.com/', 'opendoor.com/'
+    ];
+    const results = allResults.filter(r => {
+      const url = (r.url || '').toLowerCase();
+      const desc = (r.description || '').toLowerCase();
+      // Accept if it's a known property site OR if the description mentions beds/baths/sqft
+      return propertySites.some(s => url.includes(s)) ||
+        (desc.includes('bed') && desc.includes('bath')) ||
+        desc.includes('sqft') || desc.includes('sq ft') || desc.includes('square feet');
+    });
 
     if (results.length === 0) return null;
 
