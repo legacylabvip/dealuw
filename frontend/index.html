@@ -1438,7 +1438,10 @@
                 if (details.yearBuilt) info += `, built ${details.yearBuilt}`;
                 if (details.lastSalePrice) info += ` | Last sold: $${details.lastSalePrice.toLocaleString()}`;
                 if (details.propertyType) info += ` | ${details.propertyType}`;
-                if (details.zestimate) info += ` | Zestimate: $${details.zestimate.toLocaleString()}`;
+                if (details.estimatedValue) info += ` | Est. Value: $${details.estimatedValue.toLocaleString()}`;
+                else if (details.zestimate) info += ` | Zestimate: $${details.zestimate.toLocaleString()}`;
+                if (details.lotSize) info += ` | Lot: ${details.lotSize}`;
+                if (details.marketStatus) info += ` | ${details.marketStatus}`;
                 if (details.rentEstimateBrave) info += ` | Rent Est: $${details.rentEstimateBrave.toLocaleString()}/mo`;
                 if (!details.sqft) info += `</span><br><span style="color:#f39c12;">Square footage not found — please enter manually below`;
                 info += '</span>';

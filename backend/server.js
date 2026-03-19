@@ -226,9 +226,29 @@ async function fetchRentCastRentEstimate(address, beds, baths, sqft) {
 }
 
 async function getPropertyDetails(address) {
-  // Use Brave Search to find property data from Zillow/Trulia/Redfin (free, no API needed)
-  const braveData = await fetchPropertyViaBrave(address);
+  // Try Zoria Property API on Mac Mini first (has Trulia scraping for full data)
+  const ZORIA_API = process.env.ZORIA_PROPERTY_API;
+  if (ZORIA_API) {
+    try {
+      const zoriaRes = await fetch(`${ZORIA_API}/api/property/lookup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+        body: JSON.stringify({ address }),
+        signal: AbortSignal.timeout(15000)
+      });
+      if (zoriaRes.ok) {
+        const zoriaData = await zoriaRes.json();
+        if (zoriaData && zoriaData.dataSource !== 'Not found' && (zoriaData.beds || zoriaData.sqft)) {
+          return zoriaData;
+        }
+      }
+    } catch (err) {
+      console.error('Zoria Property API error:', err.message);
+    }
+  }
 
+  // Fallback: Brave Search snippet extraction
+  const braveData = await fetchPropertyViaBrave(address);
   if (braveData) {
     return {
       ...braveData,
@@ -236,7 +256,7 @@ async function getPropertyDetails(address) {
     };
   }
 
-  // Fallback: try RentCast if available
+  // Last resort: RentCast if available
   const property = await fetchRentCastProperty(address);
   if (property) {
     return {
