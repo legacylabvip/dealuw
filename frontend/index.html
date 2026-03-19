@@ -1439,17 +1439,12 @@
                 if (details.lastSalePrice) info += ` | Last sold: $${details.lastSalePrice.toLocaleString()}`;
                 if (details.propertyType) info += ` | ${details.propertyType}`;
                 if (details.zestimate) info += ` | Zestimate: $${details.zestimate.toLocaleString()}`;
-                if (details.rentEstimate || details.rentEstimateBrave) {
-                    const rent = details.rentEstimate || details.rentEstimateBrave;
-                    info += `</span><br><span style="color:#3498db;">Est. Rent: $${rent.toLocaleString()}/mo`;
-                    if (details.rentRangeLow && details.rentRangeHigh) {
-                        info += ` (range: $${details.rentRangeLow.toLocaleString()} - $${details.rentRangeHigh.toLocaleString()})`;
-                    }
-                }
+                if (details.rentEstimateBrave) info += ` | Rent Est: $${details.rentEstimateBrave.toLocaleString()}/mo`;
+                if (!details.sqft) info += `</span><br><span style="color:#f39c12;">Square footage not found — please enter manually below`;
                 info += '</span>';
                 document.getElementById('addressHint').innerHTML = info;
             } else {
-                document.getElementById('addressHint').innerHTML = '<span style="color:#f39c12;">Property not found in public listings — enter details manually below. This is common for off-market, rural, or recently sold properties.</span>';
+                document.getElementById('addressHint').innerHTML = '<span style="color:#f39c12;">Property not found in public listings — enter details manually. Tip: search your county assessor website for property records.</span>';
             }
         } catch (err) {
             console.error('Lookup error:', err);

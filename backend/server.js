@@ -188,28 +188,17 @@ async function fetchRentCastRentEstimate(address, beds, baths, sqft) {
 }
 
 async function getPropertyDetails(address) {
-  // Start with Brave for property details (free, fast, reliable)
+  // Use Brave Search to find property data from Zillow/Trulia/Redfin (free, no API needed)
   const braveData = await fetchPropertyViaBrave(address);
-
-  // Then try RentCast for LTR rental estimate
-  const beds = braveData?.beds || null;
-  const baths = braveData?.baths || null;
-  const sqft = braveData?.sqft || null;
-  const rentData = await fetchRentCastRentEstimate(address, beds, baths, sqft);
 
   if (braveData) {
     return {
       ...braveData,
-      rentEstimate: rentData?.rentEstimate || null,
-      rentRangeLow: rentData?.rentRangeLow || null,
-      rentRangeHigh: rentData?.rentRangeHigh || null,
-      dataSource: rentData?.rentEstimate
-        ? 'Public Records + RentCast Rent Estimate'
-        : 'Public Records (Brave Search)'
+      dataSource: 'Public Records (via Zoria)'
     };
   }
 
-  // If Brave fails, try RentCast for property data too
+  // Fallback: try RentCast if available
   const property = await fetchRentCastProperty(address);
   if (property) {
     return {
@@ -218,14 +207,8 @@ async function getPropertyDetails(address) {
       baths: property.bathrooms,
       sqft: property.squareFootage,
       yearBuilt: property.yearBuilt,
-      lotSize: property.lotSize,
       propertyType: property.propertyType,
       lastSalePrice: property.lastSalePrice,
-      lastSaleDate: property.lastSaleDate,
-      taxAssessment: property.taxAssessment,
-      rentEstimate: rentData?.rentEstimate || null,
-      rentRangeLow: rentData?.rentRangeLow || null,
-      rentRangeHigh: rentData?.rentRangeHigh || null,
       dataSource: 'RentCast'
     };
   }
