@@ -480,16 +480,26 @@ const cityStreets = {
 
 const getMockComps = (address) => {
   const parts = address.split(',').map(p => p.trim());
-  const stateMatch = address.match(/([A-Z]{2})\s*$/);
+
+  // Parse state code — match 2-letter state before optional zip
+  const stateMatch = address.match(/\b([A-Z]{2})\s*\d{0,5}\s*$/);
   let stateCode = stateMatch ? stateMatch[1] : 'TN';
 
+  // Parse city from address parts
   let city = 'Unknown City';
-  if (parts.length >= 2) {
-    city = parts[1];
-  }
-  if (parts.length === 2 && parts[1].includes(' ')) {
-    const cityStateParts = parts[1].split(/\s+/);
-    city = cityStateParts.slice(0, -1).join(' ');
+  if (parts.length >= 3) {
+    // "Street, City, State Zip" format
+    city = parts[1].trim();
+  } else if (parts.length === 2) {
+    // "Street, City State" or "Street, City State Zip" format
+    const cityStatePart = parts[1].trim();
+    // Remove state code and zip from end to get city
+    const cityMatch = cityStatePart.match(/^(.+?)\s+[A-Z]{2}\s*\d{0,5}\s*$/);
+    if (cityMatch) {
+      city = cityMatch[1].trim();
+    } else {
+      city = cityStatePart;
+    }
   }
 
   const market = marketData[stateCode] || marketData['TN'];
