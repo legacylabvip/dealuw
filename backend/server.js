@@ -37,74 +37,100 @@ async function fetchRentCastProperty(address) {
 
 async function fetchPropertyViaBrave(address) {
   try {
-    const query = `${address} property details beds baths sqft`;
-    const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=5`, {
+    // Extract street address for targeted Zillow search
+    const streetParts = address.split(',')[0].trim();
+    const query = `site:zillow.com "${streetParts}" ${address.replace(streetParts, '').trim()}`;
+    const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=3`, {
       headers: { 'X-Subscription-Token': BRAVE_API_KEY, 'Accept': 'application/json' }
     });
     if (!res.ok) return null;
     const data = await res.json();
-    const results = (data.web || {}).results || [];
+    let results = (data.web || {}).results || [];
 
-    let beds = null, baths = null, sqft = null, yearBuilt = null, lastSalePrice = null, propertyType = null, formattedAddress = null;
+    // Only use results from zillow.com/homedetails (actual property pages)
+    results = results.filter(r => (r.url || '').includes('zillow.com/homedetails'));
+
+    if (results.length === 0) {
+      // Fallback: try Trulia and Realtor too
+      const fallbackQuery = `"${streetParts}" beds baths sqft site:zillow.com OR site:trulia.com OR site:realtor.com`;
+      const res2 = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(fallbackQuery)}&count=5`, {
+        headers: { 'X-Subscription-Token': BRAVE_API_KEY, 'Accept': 'application/json' }
+      });
+      if (res2.ok) {
+        const data2 = await res2.json();
+        results = ((data2.web || {}).results || []).filter(r => {
+          const url = (r.url || '').toLowerCase();
+          return url.includes('zillow.com/homedetails') || url.includes('trulia.com/p/') || url.includes('realtor.com/realestateandhomes-detail');
+        });
+      }
+    }
+
+    if (results.length === 0) return null;
+
+    let beds = null, baths = null, sqft = null, yearBuilt = null, lastSalePrice = null, propertyType = null, formattedAddress = null, zestimate = null, rentEstimateBrave = null;
 
     for (const r of results) {
-      const text = ((r.description || '') + ' ' + (r.title || '')).toLowerCase();
+      const text = ((r.description || '') + ' ' + (r.title || '')).replace(/,/g, '');
 
-      // Extract sqft
       if (!sqft) {
-        const sqftMatch = text.match(/([\d,]+)\s*(?:sq\.?\s*ft|sqft|square\s*feet)/i);
-        if (sqftMatch) sqft = parseInt(sqftMatch[1].replace(/,/g, ''));
+        const sqftMatch = text.match(/([\d]+)\s*(?:sq\.?\s*ft|sqft|square\s*feet)/i);
+        if (sqftMatch) sqft = parseInt(sqftMatch[1]);
       }
 
-      // Extract beds
-      if (!beds) {
-        const bedMatch = text.match(/(\d+)\s*(?:bed|br|bedroom)/i);
+      if (beds === null) {
+        const bedMatch = text.match(/(\d+)\s*(?:bed\b|bedroom)/i);
         if (bedMatch) beds = parseInt(bedMatch[1]);
       }
 
-      // Extract baths
-      if (!baths) {
-        const bathMatch = text.match(/([\d.]+)\s*(?:bath|ba|bathroom)/i);
+      if (baths === null) {
+        const bathMatch = text.match(/([\d.]+)\s*(?:bath\b|bathroom)/i);
         if (bathMatch) baths = parseFloat(bathMatch[1]);
       }
 
-      // Extract year built
       if (!yearBuilt) {
         const yearMatch = text.match(/built\s*(?:in\s*)?(\d{4})/i);
         if (yearMatch) yearBuilt = parseInt(yearMatch[1]);
       }
 
-      // Extract price
+      if (!zestimate) {
+        const zestMatch = text.match(/zestimate[^$]*\$\s*([\d]+[\d]*)/i);
+        if (zestMatch) zestimate = parseInt(zestMatch[1]);
+      }
+
+      if (!rentEstimateBrave) {
+        const rentMatch = text.match(/rent\s*zestimate[^$]*\$\s*([\d]+[\d]*)\s*\/?\s*mo/i);
+        if (rentMatch) rentEstimateBrave = parseInt(rentMatch[1]);
+      }
+
       if (!lastSalePrice) {
-        const priceMatch = text.match(/\$\s*([\d,]+(?:\.\d+)?)\s*(?:k|m)?/i);
-        if (priceMatch) {
-          let price = parseFloat(priceMatch[1].replace(/,/g, ''));
-          if (price < 1000) price *= 1000;
-          if (price > 10000) lastSalePrice = Math.round(price);
+        const soldMatch = text.match(/(?:sold|last\s*sold)[^$]*\$\s*([\d]+[\d]*)/i);
+        if (soldMatch) {
+          const price = parseInt(soldMatch[1]);
+          if (price > 10000) lastSalePrice = price;
         }
       }
 
-      // Extract property type
       if (!propertyType) {
-        if (text.includes('single-family') || text.includes('single family')) propertyType = 'Single Family';
-        else if (text.includes('condo')) propertyType = 'Condo';
-        else if (text.includes('townhouse') || text.includes('townhome')) propertyType = 'Townhouse';
-        else if (text.includes('multi-family') || text.includes('multifamily') || text.includes('duplex')) propertyType = 'Multi-Family';
+        const lower = text.toLowerCase();
+        if (lower.includes('single family')) propertyType = 'Single Family';
+        else if (lower.includes('condo')) propertyType = 'Condo';
+        else if (lower.includes('townhouse') || lower.includes('townhome')) propertyType = 'Townhouse';
+        else if (lower.includes('multi-family') || lower.includes('multifamily') || lower.includes('duplex')) propertyType = 'Multi-Family';
+        else if (lower.includes('mobile') || lower.includes('manufactured')) propertyType = 'Mobile/Manufactured';
       }
 
-      // Get formatted address from Zillow/Trulia title
-      if (!formattedAddress && (r.url || '').includes('zillow.com')) {
+      if (!formattedAddress) {
         const addrMatch = (r.title || '').match(/^(.+?)\s*\|/);
         if (addrMatch) formattedAddress = addrMatch[1].trim();
       }
     }
 
-    if (!sqft && !beds && !baths) return null;
+    if (!sqft && beds === null && baths === null) return null;
 
     return {
       address: formattedAddress || address,
-      beds, baths, sqft, yearBuilt, lastSalePrice, propertyType,
-      dataSource: 'Public Records (Brave Search)'
+      beds, baths, sqft, yearBuilt, lastSalePrice, propertyType, zestimate, rentEstimateBrave,
+      dataSource: 'Public Records'
     };
   } catch (err) {
     console.error('Brave property fetch error:', err.message);

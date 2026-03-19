@@ -1438,8 +1438,10 @@
                 if (details.yearBuilt) info += `, built ${details.yearBuilt}`;
                 if (details.lastSalePrice) info += ` | Last sold: $${details.lastSalePrice.toLocaleString()}`;
                 if (details.propertyType) info += ` | ${details.propertyType}`;
-                if (details.rentEstimate) {
-                    info += `</span><br><span style="color:#3498db;">Est. Rent: $${details.rentEstimate.toLocaleString()}/mo`;
+                if (details.zestimate) info += ` | Zestimate: $${details.zestimate.toLocaleString()}`;
+                if (details.rentEstimate || details.rentEstimateBrave) {
+                    const rent = details.rentEstimate || details.rentEstimateBrave;
+                    info += `</span><br><span style="color:#3498db;">Est. Rent: $${rent.toLocaleString()}/mo`;
                     if (details.rentRangeLow && details.rentRangeHigh) {
                         info += ` (range: $${details.rentRangeLow.toLocaleString()} - $${details.rentRangeHigh.toLocaleString()})`;
                     }
