@@ -37,32 +37,40 @@ async function fetchRentCastProperty(address) {
 
 async function fetchPropertyViaBrave(address) {
   try {
-    // Extract street address for targeted Zillow search
+    // Search for the property across real estate listing sites
     const streetParts = address.split(',')[0].trim();
-    const query = `site:zillow.com "${streetParts}" ${address.replace(streetParts, '').trim()}`;
-    const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=3`, {
-      headers: { 'X-Subscription-Token': BRAVE_API_KEY, 'Accept': 'application/json' }
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    let results = (data.web || {}).results || [];
+    const cityStateZip = address.replace(streetParts, '').trim().replace(/^,\s*/, '');
 
-    // Only use results from zillow.com/homedetails (actual property pages)
-    results = results.filter(r => (r.url || '').includes('zillow.com/homedetails'));
+    // Try multiple search strategies
+    const searches = [
+      `"${streetParts}" ${cityStateZip} beds baths sqft`,
+      `"${streetParts}" ${cityStateZip} property details`,
+    ];
 
-    if (results.length === 0) {
-      // Fallback: try Trulia and Realtor too
-      const fallbackQuery = `"${streetParts}" beds baths sqft site:zillow.com OR site:trulia.com OR site:realtor.com`;
-      const res2 = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(fallbackQuery)}&count=5`, {
+    let results = [];
+    for (const query of searches) {
+      const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=5`, {
         headers: { 'X-Subscription-Token': BRAVE_API_KEY, 'Accept': 'application/json' }
       });
-      if (res2.ok) {
-        const data2 = await res2.json();
-        results = ((data2.web || {}).results || []).filter(r => {
-          const url = (r.url || '').toLowerCase();
-          return url.includes('zillow.com/homedetails') || url.includes('trulia.com/p/') || url.includes('realtor.com/realestateandhomes-detail');
-        });
-      }
+      if (!res.ok) continue;
+      const data = await res.json();
+      const webResults = (data.web || {}).results || [];
+
+      // Prefer property listing sites but accept any that mention the address
+      const listingSites = webResults.filter(r => {
+        const url = (r.url || '').toLowerCase();
+        return url.includes('zillow.com') || url.includes('trulia.com') || url.includes('realtor.com') ||
+               url.includes('redfin.com') || url.includes('movoto.com') || url.includes('xome.com') ||
+               url.includes('homes.com') || url.includes('estately.com');
+      });
+
+      if (listingSites.length > 0) { results = listingSites; break; }
+      // If no listing sites, use all results that mention the street
+      const streetName = streetParts.toLowerCase();
+      const relevant = webResults.filter(r =>
+        ((r.description || '') + (r.title || '')).toLowerCase().includes(streetName.split(' ').pop())
+      );
+      if (relevant.length > 0 && results.length === 0) results = relevant;
     }
 
     if (results.length === 0) return null;
