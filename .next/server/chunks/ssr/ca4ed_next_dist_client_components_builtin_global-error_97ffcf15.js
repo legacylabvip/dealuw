@@ -1,0 +1,3 @@
+module.exports=[55321,(a,b,c)=>{let{createClientModuleProxy:d}=a.r(35718);a.n(d("[project]/.openclaw/workspace/projects/DealUW/node_modules/next/dist/client/components/builtin/global-error.js <module evaluation>"))},41170,(a,b,c)=>{let{createClientModuleProxy:d}=a.r(35718);a.n(d("[project]/.openclaw/workspace/projects/DealUW/node_modules/next/dist/client/components/builtin/global-error.js"))},25942,a=>{"use strict";a.i(55321);var b=a.i(41170);a.n(b)}];
+
+//# sourceMappingURL=ca4ed_next_dist_client_components_builtin_global-error_97ffcf15.js.map

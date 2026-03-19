@@ -1,0 +1,5 @@
+1:"$Sreact.fragment"
+2:I[89116,["/_next/static/chunks/752305da9c1b0df8.js","/_next/static/chunks/785d8a4fc55c7f6d.js"],"ViewportBoundary"]
+3:I[89116,["/_next/static/chunks/752305da9c1b0df8.js","/_next/static/chunks/785d8a4fc55c7f6d.js"],"MetadataBoundary"]
+4:"$Sreact.suspense"
+0:{"buildId":"3LAE27QaaHabXrI-1bosl","rsc":["$","$1","h",{"children":[null,["$","$L2",null,{"children":[["$","meta","0",{"charSet":"utf-8"}],["$","meta","1",{"name":"viewport","content":"width=device-width, initial-scale=1"}]]}],["$","div",null,{"hidden":true,"children":["$","$L3",null,{"children":["$","$4",null,{"name":"Next.Metadata","children":[["$","title","0",{"children":"DealUW - Smart Property Underwriting"}],["$","meta","1",{"name":"description","content":"Underwrite any deal in 60 seconds. Professional property underwriting for real estate wholesalers."}]]}]}]}],["$","meta",null,{"name":"next-size-adjust","content":""}]]}],"loading":null,"isPartial":false}

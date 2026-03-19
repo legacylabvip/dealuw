@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "functions": {
+    "/api/estimate-repairs": {
+      "maxDuration": 60
+    },
+    "/api/lookup/comps": {
+      "maxDuration": 60
+    },
+    "/api/lookup/property": {
+      "maxDuration": 60
+    },
+    "/api/lookup/repairs": {
+      "maxDuration": 60
+    }
+  }
+}

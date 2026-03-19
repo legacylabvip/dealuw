@@ -1,0 +1,47 @@
+{
+  "app": {
+    "[project]/.openclaw/workspace/projects/DealUW/src/app/_not-found/page": [
+      "static/media/5c285b27cdda1fe8-s.p.a62025f2.woff2",
+      "static/media/70bc3e132a0a741e-s.p.15008bfb.woff2"
+    ],
+    "[project]/.openclaw/workspace/projects/DealUW/src/app/analyze/[id]/page": [
+      "static/media/5c285b27cdda1fe8-s.p.a62025f2.woff2",
+      "static/media/70bc3e132a0a741e-s.p.15008bfb.woff2"
+    ],
+    "[project]/.openclaw/workspace/projects/DealUW/src/app/analyze/new/page": [
+      "static/media/5c285b27cdda1fe8-s.p.a62025f2.woff2",
+      "static/media/70bc3e132a0a741e-s.p.15008bfb.woff2"
+    ],
+    "[project]/.openclaw/workspace/projects/DealUW/src/app/analyze/page": [
+      "static/media/5c285b27cdda1fe8-s.p.a62025f2.woff2",
+      "static/media/70bc3e132a0a741e-s.p.15008bfb.woff2"
+    ],
+    "[project]/.openclaw/workspace/projects/DealUW/src/app/login/page": [
+      "static/media/5c285b27cdda1fe8-s.p.a62025f2.woff2",
+      "static/media/70bc3e132a0a741e-s.p.15008bfb.woff2"
+    ],
+    "[project]/.openclaw/workspace/projects/DealUW/src/app/page": [
+      "static/media/5c285b27cdda1fe8-s.p.a62025f2.woff2",
+      "static/media/70bc3e132a0a741e-s.p.15008bfb.woff2"
+    ],
+    "[project]/.openclaw/workspace/projects/DealUW/src/app/pipeline/page": [
+      "static/media/5c285b27cdda1fe8-s.p.a62025f2.woff2",
+      "static/media/70bc3e132a0a741e-s.p.15008bfb.woff2"
+    ],
+    "[project]/.openclaw/workspace/projects/DealUW/src/app/pricing/page": [
+      "static/media/5c285b27cdda1fe8-s.p.a62025f2.woff2",
+      "static/media/70bc3e132a0a741e-s.p.15008bfb.woff2"
+    ],
+    "[project]/.openclaw/workspace/projects/DealUW/src/app/rules/page": [
+      "static/media/5c285b27cdda1fe8-s.p.a62025f2.woff2",
+      "static/media/70bc3e132a0a741e-s.p.15008bfb.woff2"
+    ],
+    "[project]/.openclaw/workspace/projects/DealUW/src/app/settings/page": [
+      "static/media/5c285b27cdda1fe8-s.p.a62025f2.woff2",
+      "static/media/70bc3e132a0a741e-s.p.15008bfb.woff2"
+    ]
+  },
+  "appUsingSizeAdjust": true,
+  "pages": {},
+  "pagesUsingSizeAdjust": false
+}

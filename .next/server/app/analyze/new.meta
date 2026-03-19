@@ -1,0 +1,16 @@
+{
+  "headers": {
+    "x-nextjs-stale-time": "300",
+    "x-nextjs-prerender": "1",
+    "x-next-cache-tags": "_N_T_/layout,_N_T_/analyze/layout,_N_T_/analyze/new/layout,_N_T_/analyze/new/page,_N_T_/analyze/new"
+  },
+  "segmentPaths": [
+    "/_tree",
+    "/_full",
+    "/analyze/new/__PAGE__",
+    "/analyze/new",
+    "/analyze",
+    "/_index",
+    "/_head"
+  ]
+}
