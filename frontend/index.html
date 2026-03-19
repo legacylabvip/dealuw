@@ -1168,13 +1168,21 @@
         if (session && session.user) {
             authLoading = true;
             currentUser = session.user;
-            // Show UI immediately, load data in background
+            // Show UI immediately
             updateUIForAuth(true);
             hideAuthModal();
             try {
+                // Small delay to ensure Supabase session is fully established
+                await new Promise(r => setTimeout(r, 500));
                 await loadProfile();
-                updateUIForAuth(true); // refresh with profile data
-                loadDeals(); // don't await — load in background
+                // If profile still didn't load, retry once
+                if (!currentProfile || !currentProfile.subscription_tier) {
+                    console.log('Profile retry...');
+                    await new Promise(r => setTimeout(r, 1000));
+                    await loadProfile();
+                }
+                updateUIForAuth(true);
+                loadDeals();
             } catch (err) {
                 console.error('Auth load error:', err);
             }
@@ -1212,8 +1220,15 @@
                 .eq('id', currentUser.id)
                 .maybeSingle();
 
-            if (!data) {
-                // Profile doesn't exist — create it
+            if (error) {
+                console.error('Profile load error:', error);
+            }
+
+            if (data) {
+                currentProfile = data;
+                console.log('Profile loaded:', data.email, 'tier:', data.subscription_tier);
+            } else {
+                // Profile doesn't exist — create a NEW one (INSERT only, not upsert)
                 const newProfile = {
                     id: currentUser.id,
                     email: currentUser.email,
@@ -1228,16 +1243,24 @@
                 };
                 const { data: created, error: createErr } = await supabaseClient
                     .from('profiles')
-                    .upsert(newProfile, { onConflict: 'id' })
+                    .insert(newProfile)
                     .select()
                     .maybeSingle();
-                currentProfile = created || newProfile;
-            } else {
-                currentProfile = data;
+
+                if (createErr && createErr.code === '23505') {
+                    // Profile exists but RLS blocked our read — try reading again
+                    const { data: retry } = await supabaseClient
+                        .from('profiles')
+                        .select('*')
+                        .eq('id', currentUser.id)
+                        .maybeSingle();
+                    currentProfile = retry || newProfile;
+                } else {
+                    currentProfile = created || newProfile;
+                }
             }
         } catch (err) {
             console.error('Load profile error:', err);
-            // Fallback — let them use the app with defaults
             currentProfile = {
                 email: currentUser.email,
                 subscription_tier: 'free',
