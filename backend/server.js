@@ -37,108 +37,73 @@ async function fetchRentCastProperty(address) {
 
 async function fetchPropertyViaBrave(address) {
   try {
-    // Search for the property across real estate listing sites
     const streetParts = address.split(',')[0].trim();
-    const cityStateZip = address.replace(streetParts, '').trim().replace(/^,\s*/, '');
+    const query = `"${streetParts}" ${address.replace(streetParts, '').trim()} beds baths sqft`;
 
-    // Try multiple search strategies
-    const searches = [
-      `"${streetParts}" ${cityStateZip} beds baths sqft`,
-      `"${streetParts}" ${cityStateZip} property details`,
-    ];
+    const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=10`, {
+      headers: { 'X-Subscription-Token': BRAVE_API_KEY, 'Accept': 'application/json' }
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const allResults = (data.web || {}).results || [];
 
-    let results = [];
-    for (const query of searches) {
-      const res = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=5`, {
-        headers: { 'X-Subscription-Token': BRAVE_API_KEY, 'Accept': 'application/json' }
-      });
-      if (!res.ok) continue;
-      const data = await res.json();
-      const webResults = (data.web || {}).results || [];
-
-      // Prefer property listing sites but accept any that mention the address
-      const listingSites = webResults.filter(r => {
-        const url = (r.url || '').toLowerCase();
-        return url.includes('zillow.com') || url.includes('trulia.com') || url.includes('realtor.com') ||
-               url.includes('redfin.com') || url.includes('movoto.com') || url.includes('xome.com') ||
-               url.includes('homes.com') || url.includes('estately.com');
-      });
-
-      if (listingSites.length > 0) { results = listingSites; break; }
-      // If no listing sites, use all results that mention the street
-      const streetName = streetParts.toLowerCase();
-      const relevant = webResults.filter(r =>
-        ((r.description || '') + (r.title || '')).toLowerCase().includes(streetName.split(' ').pop())
-      );
-      if (relevant.length > 0 && results.length === 0) results = relevant;
-    }
+    // Filter to actual property listing pages only
+    const listingSites = ['zillow.com/homedetails', 'trulia.com/home', 'trulia.com/p/',
+      'realtor.com/realestateandhomes-detail', 'redfin.com/', 'homes.com/'];
+    const results = allResults.filter(r => listingSites.some(s => (r.url || '').includes(s)));
 
     if (results.length === 0) return null;
 
-    let beds = null, baths = null, sqft = null, yearBuilt = null, lastSalePrice = null, propertyType = null, formattedAddress = null, zestimate = null, rentEstimateBrave = null;
+    let beds = null, baths = null, sqft = null, yearBuilt = null, lastSalePrice = null,
+        propertyType = null, formattedAddress = null, zestimate = null, rentEstimateBrave = null;
 
     for (const r of results) {
-      const text = ((r.description || '') + ' ' + (r.title || '')).replace(/,/g, '');
-
-      if (!sqft) {
-        const sqftMatch = text.match(/([\d]+)\s*(?:sq\.?\s*ft|sqft|square\s*feet)/i);
-        if (sqftMatch) sqft = parseInt(sqftMatch[1]);
-      }
+      // Strip HTML tags and commas for clean extraction
+      const text = ((r.description || '') + ' ' + (r.title || '')).replace(/<[^>]+>/g, ' ').replace(/,/g, '');
 
       if (beds === null) {
-        const bedMatch = text.match(/(\d+)\s*(?:bed\b|bedroom)/i);
-        if (bedMatch) beds = parseInt(bedMatch[1]);
+        const m = text.match(/(\d+)\s*(?:beds?\b|bedrooms?\b|bd\b|br\b)/i);
+        if (m) beds = parseInt(m[1]);
       }
-
       if (baths === null) {
-        const bathMatch = text.match(/([\d.]+)\s*(?:bath\b|bathroom)/i);
-        if (bathMatch) baths = parseFloat(bathMatch[1]);
+        const m = text.match(/([\d.]+)\s*(?:baths?\b|bathrooms?\b|ba\b)/i);
+        if (m) baths = parseFloat(m[1]);
       }
-
+      if (sqft === null) {
+        const m = text.match(/([\d]+)\s*(?:sq\.?\s*ft|sqft|square\s*feet)/i);
+        if (m) sqft = parseInt(m[1]);
+      }
       if (!yearBuilt) {
-        const yearMatch = text.match(/built\s*(?:in\s*)?(\d{4})/i);
-        if (yearMatch) yearBuilt = parseInt(yearMatch[1]);
+        const m = text.match(/(?:built|year built)[:\s]*(\d{4})/i);
+        if (m) yearBuilt = parseInt(m[1]);
       }
-
       if (!zestimate) {
-        const zestMatch = text.match(/zestimate[^$]*\$\s*([\d]+[\d]*)/i);
-        if (zestMatch) zestimate = parseInt(zestMatch[1]);
+        const m = text.match(/zestimate[^$]*\$\s*([\d]+)/i);
+        if (m) zestimate = parseInt(m[1]);
       }
-
       if (!rentEstimateBrave) {
-        const rentMatch = text.match(/rent\s*zestimate[^$]*\$\s*([\d]+[\d]*)\s*\/?\s*mo/i);
-        if (rentMatch) rentEstimateBrave = parseInt(rentMatch[1]);
+        const m = text.match(/rent\s*zestimate[^$]*\$\s*([\d]+)/i);
+        if (m) rentEstimateBrave = parseInt(m[1]);
       }
-
-      if (!lastSalePrice) {
-        const soldMatch = text.match(/(?:sold|last\s*sold)[^$]*\$\s*([\d]+[\d]*)/i);
-        if (soldMatch) {
-          const price = parseInt(soldMatch[1]);
-          if (price > 10000) lastSalePrice = price;
-        }
-      }
-
       if (!propertyType) {
         const lower = text.toLowerCase();
         if (lower.includes('single family')) propertyType = 'Single Family';
         else if (lower.includes('condo')) propertyType = 'Condo';
         else if (lower.includes('townhouse') || lower.includes('townhome')) propertyType = 'Townhouse';
         else if (lower.includes('multi-family') || lower.includes('multifamily') || lower.includes('duplex')) propertyType = 'Multi-Family';
-        else if (lower.includes('mobile') || lower.includes('manufactured')) propertyType = 'Mobile/Manufactured';
       }
-
       if (!formattedAddress) {
-        const addrMatch = (r.title || '').match(/^(.+?)\s*\|/);
-        if (addrMatch) formattedAddress = addrMatch[1].trim();
+        const m = (r.title || '').match(/^(.+?)\s*[|\-]/);
+        if (m) formattedAddress = m[1].trim();
       }
     }
 
-    if (!sqft && beds === null && baths === null) return null;
+    if (sqft === null && beds === null && baths === null) return null;
 
     return {
       address: formattedAddress || address,
       beds, baths, sqft, yearBuilt, lastSalePrice, propertyType, zestimate, rentEstimateBrave,
-      dataSource: 'Public Records'
+      dataSource: 'Public Records (via Zoria)'
     };
   } catch (err) {
     console.error('Brave property fetch error:', err.message);
